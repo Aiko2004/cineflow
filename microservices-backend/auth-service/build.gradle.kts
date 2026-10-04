@@ -20,7 +20,7 @@ dependencies {
     // (spring-boot-dependencies объявляет nimbus-jose-jwt.version), поэтому без явной версии.
     // auth-service НЕ resource-server: он выпускает токены, а не проверяет их,
     // поэтому spring-security сюда не подключается — только чистый Nimbus.
-    implementation("com.nimbusds:nimbus-jose-jwt:9.48")
+    implementation("com.nimbusds:nimbus-jose-jwt:10.10")
 
     // UUIDv7 — time-ordered UUID, дружелюбен к индексам (см. AUTH_DESIGN.md §"Про версию UUID").
     implementation("com.github.f4b6a3:uuid-creator:6.0.0")
