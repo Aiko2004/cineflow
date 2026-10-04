@@ -1,0 +1,114 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: booking-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${BOOKING_DB_NAME:booking}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    baseline-on-migrate: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+    web:
+      pageable:
+        max-page-size: 100
+        default-page-size: 20
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://localhost:8084/.well-known/jwks.json}
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 5000
+            read-timeout: 5000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+# gRPC-клиент к screening-service. Прямой адрес (не через Eureka lb): gRPC-канал
+# резолвит host:port сам; балансировка через discovery — отдельная тема (пока один инстанс).
+grpc:
+  client:
+    screening:
+      host: ${SCREENING_GRPC_HOST:localhost}
+      port: ${SCREENING_GRPC_PORT:9083}
+
+cineflow:
+  booking:
+    seat-hold-ttl: 2m
+    booking-hold-ttl: 10m
+    max-seats-per-booking: 10
+
+# Уборщик брошенных PENDING (интервал из §10 — начать с минуты).
+booking:
+  sweeper:
+    interval: 60000
+
+# Resilience4j для внешних вызовов (gRPC screening + Feign theater), по образцу screening-service.
+resilience4j:
+  circuitbreaker:
+    instances:
+      screening-service:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        ignore-exceptions:
+          - com.cineflow.booking.exception.ScreeningNotFoundException
+          - com.cineflow.booking.exception.ServiceUnavailableException
+      theater-service:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        ignore-exceptions:
+          - com.cineflow.booking.exception.SeatNotFoundException
+          - com.cineflow.booking.exception.ServiceUnavailableException
+  bulkhead:
+    instances:
+      screening-service:
+        max-concurrent-calls: 10
+        max-wait-duration: 0ms
+      theater-service:
+        max-concurrent-calls: 10
+        max-wait-duration: 0ms
+  retry:
+    instances:
+      screening-service:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.cineflow.booking.exception.ScreeningNotFoundException
+          - com.cineflow.booking.exception.ServiceUnavailableException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+      theater-service:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.cineflow.booking.exception.SeatNotFoundException
+          - com.cineflow.booking.exception.ServiceUnavailableException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException

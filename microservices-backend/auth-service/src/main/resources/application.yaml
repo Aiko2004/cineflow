@@ -1,0 +1,55 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${AUTH_DB_NAME:auth}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      # Flyway владеет схемой. validate: Hibernate только сверяет сущности со схемой
+      # при старте и падает при расхождении — никогда не трогает DDL.
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    baseline-on-migrate: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+# Параметры домена auth: JWT, OTP, rate limit. Биндятся в AuthProperties (record).
+cineflow:
+  auth:
+    jwt:
+      issuer: ${JWT_ISSUER:https://auth.cineflow.local}
+      audience: ${JWT_AUDIENCE:cineflow-api}
+      # access живёт коротко (утёкший токен быстро протухает),
+      # refresh долго (пользователь не логинится каждые 15 минут).
+      access-ttl: 15m
+      refresh-ttl: 30d
+      # kid попадает в заголовок токена и в JWKS — позволяет ротацию ключей без простоя.
+      key-id: ${JWT_KEY_ID:cineflow-dev-key}
+    otp:
+      ttl: 5m
+      code-length: 6
+      # После 5 неверных попыток ключ удаляется целиком (см. AUTH_DESIGN.md §6).
+      max-attempts: 5
+    rate-limit:
+      # Лимит по email — не заваливать письмами одного человека.
+      email:
+        max: 5
+        window: 15m
+      # Лимит по IP — иначе атакующий перебирает разные адреса с одной машины.
+      ip:
+        max: 20
+        window: 15m
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/

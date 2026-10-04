@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+// Пакет proto (логическое пространство имён сообщений в сети).
+package cineflow.screening.v1;
+
+// java_multiple_files=true — каждое сообщение/сервис в своём .java-файле,
+// а не один громоздкий outer-класс. java_package задаёт Java-пакет для сгенерированного кода.
+option java_multiple_files = true;
+option java_package = "com.cineflow.contracts.grpc.screening";
+option java_outer_classname = "ScreeningProto";
+
+// Единственный внутренний вызов: получить сеанс для валидации + денормализации в брони.
+// Один RPC покрывает и «существует ли сеанс», и данные (снапшоты, цены по типам мест).
+service ScreeningService {
+  rpc GetScreening(GetScreeningRequest) returns (GetScreeningResponse);
+}
+
+message GetScreeningRequest {
+  string screening_id = 1;
+}
+
+message GetScreeningResponse {
+  string id = 1;
+  // Instant/дата/цена передаём строками (ISO-8601 / decimal): без well-known-типов
+  // proto проще, а BigDecimal через string сохраняет точность (double бы округлил).
+  string start_at = 2;         // ISO-8601 Instant
+  string end_at = 3;           // ISO-8601 Instant
+  string screening_date = 4;   // ISO-8601 LocalDate
+  MovieSnapshot movie = 5;
+  TheaterSnapshot theater = 6;
+  HallSnapshot hall = 7;
+  repeated SeatTypePrice seat_types = 8;
+}
+
+message MovieSnapshot {
+  string id = 1;
+  string title = 2;
+  string slug = 3;
+  string banner = 4;
+}
+
+message TheaterSnapshot {
+  string id = 1;
+  string name = 2;
+  string address = 3;
+}
+
+message HallSnapshot {
+  string id = 1;
+  string name = 2;
+}
+
+message SeatTypePrice {
+  string type = 1;   // имя enum SeatType (NORMAL/VIP/...)
+  string price = 2;  // decimal как строка
+}

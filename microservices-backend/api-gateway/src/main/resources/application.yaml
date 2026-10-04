@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      # ВАЖНО: у сервлетного gateway (spring-cloud-gateway-server-webmvc) префикс свойств —
+      # spring.cloud.gateway.server.webmvc.*, а НЕ spring.cloud.gateway.* (это реактивный
+      # namespace). Маршруты, объявленные под неверным префиксом, молча игнорируются:
+      # запрос не находит маршрут → 404 → dispatch на /error → security отдаёт 401,
+      # маскируя настоящую причину. Discovery-locator в этом варианте отсутствует —
+      # опираемся на явные маршруты (что и нужно за периметром безопасности, AUTH_DESIGN.md §8).
+      server:
+        webmvc:
+          routes:
+            - id: auth-service
+              uri: lb://auth-service
+              predicates:
+                - Path=/auth/**
+            - id: auth-jwks
+              uri: lb://auth-service
+              predicates:
+                - Path=/.well-known/**
+            - id: movie-service
+              uri: lb://movie-service
+              predicates:
+                - Path=/movies/**
+            - id: theater-service
+              uri: lb://theater-service
+              predicates:
+                - Path=/api/theaters/**,/api/halls/**,/api/seats/**
+            - id: screening-service
+              uri: lb://screening-service
+              predicates:
+                - Path=/api/screenings/**
+            - id: booking-service
+              uri: lb://booking-service
+              predicates:
+                - Path=/bookings/**
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Откуда брать публичные ключи для проверки подписи. Spring кеширует их
+          # и перезапрашивает при неизвестном kid.
+          jwk-set-uri: ${JWKS_URI:http://localhost:8084/.well-known/jwks.json}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/

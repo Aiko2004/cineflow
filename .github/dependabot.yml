@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Gradle dependencies across the monorepo.
+  - package-ecosystem: gradle
+    directory: /microservices-backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Bundle all Spring (Boot + Cloud) bumps into a single PR — they move together.
+      spring:
+        patterns:
+          - "org.springframework*"
+          - "io.spring.*"
+
+  # GitHub Actions used by the workflows in this repo.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

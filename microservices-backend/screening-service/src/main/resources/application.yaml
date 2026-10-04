@@ -1,0 +1,144 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: screening-service
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+        default-page-size: 20
+  # Boot 4: строка подключения Mongo читается из spring.mongodb.uri, а НЕ
+  # spring.data.mongodb.uri (там теперь только настройки маппинга/репозиториев).
+  # При старом ключе connection-details брал дефолт localhost без кред → драйвер
+  # подключался с credential=null и падал на "Command requires authentication".
+  mongodb:
+    uri: mongodb://${MONGO_USER:root}:${MONGO_PASSWORD:root}@${MONGO_HOST:localhost}:${MONGO_PORT:27017}/${MONGO_DB:screening}?authSource=admin
+  jackson:
+    # Jackson 3: фича переехала из DeserializationFeature в EnumFeature,
+    # поэтому ключ теперь spring.jackson.datatype.enum.*, а не .deserialization.*
+    # (старый ключ ломал старт: "No enum constant ... DeserializationFeature").
+    datatype:
+      enum:
+        # Незнакомое значение SeatType (добавленное в более новой версии contracts)
+        # смапится в UNKNOWN вместо падения десериализации.
+        read-unknown-enum-values-using-default-value: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Публичные ключи auth-service (кешируются, перезапрос при неизвестном kid).
+          jwk-set-uri: ${JWKS_URI:http://localhost:8084/.well-known/jwks.json}
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            # Feign таймауты — максимальное время одного вызова.
+            # Должны быть ВЫШЕ slow-call-duration-threshold, чтобы CB успел
+            # заметить медленный вызов до того, как Feign его прервёт сам.
+            connect-timeout: 5000
+            read-timeout: 5000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+# gRPC-сервер (booking→screening). ВНУТРЕННИЙ порт: не за gateway, не публикуется в
+# docker-compose. По умолчанию слушает loopback (127.0.0.1) — недоступен из LAN, «внутренний»
+# это факт, а не допущение. В контейнерах задать GRPC_HOST=0.0.0.0 (изоляция — тем, что порт
+# не публикуется). mTLS — если вызов пересечёт границу доверия. См. BOOKING_DESIGN.md §5.
+grpc:
+  server:
+    host: ${GRPC_HOST:127.0.0.1}
+    port: ${GRPC_PORT:9083}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      movie-service:
+        # Окно наблюдения: последние 10 вызовов.
+        # В проде — 20–50 при высоком RPS.
+        sliding-window-size: 10
+
+        # Открываем автомат, если ≥50% вызовов упали.
+        # Стандартный порог — не слишком чувствительный, не слишком мягкий.
+        failure-rate-threshold: 50
+
+        # Вызов «медленный», если занял >2 с. Feign отрубает на 5 с — у нас
+        # порог ниже, чтобы CB реагировал раньше принудительного разрыва.
+        slow-call-duration-threshold: 2s
+
+        # Открываем автомат, если ≥80% вызовов медленные.
+        slow-call-rate-threshold: 80
+
+        # В состоянии OPEN ждём 10 с — «даём сервису отдышаться».
+        # Потом HALF-OPEN: пробуем 3 запроса.
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+
+        # Эти исключения CB не считает сбоями и не вызывает fallback:
+        #   MovieNotFoundException — 404 означает «ресурса нет», не «сервис сломан»
+        #   ServiceUnavailableException — бросается из bulkhead-fallback, не должна
+        #     открывать CB (иначе переполнение очереди ложно «поломает» автомат)
+        ignore-exceptions:
+          - com.cineflow.screening.exception.MovieNotFoundException
+          - com.cineflow.screening.exception.ServiceUnavailableException
+
+      theater-service:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 2s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        ignore-exceptions:
+          - com.cineflow.screening.exception.HallNotFoundException
+          - com.cineflow.screening.exception.TheaterNotFoundException
+          - com.cineflow.screening.exception.ServiceUnavailableException
+
+  bulkhead:
+    instances:
+      movie-service:
+        # Не более 10 одновременных вызовов к movie-service.
+        # При стандартном пуле Tomcat (200 потоков) это оставляет 190 потоков
+        # для остальных запросов — read-эндпоинты не голодают даже под нагрузкой.
+        max-concurrent-calls: 10
+        # Немедленный отказ при превышении — не ждать, не ставить в очередь.
+        # Очередь только маскирует проблему и превращает быстрый 503 в медленный.
+        max-wait-duration: 0ms
+
+      theater-service:
+        max-concurrent-calls: 10
+        max-wait-duration: 0ms
+
+  retry:
+    instances:
+      movie-service:
+        # 3 попытки (1 оригинальная + 2 повтора).
+        max-attempts: 3
+        # Базовая задержка 500 мс, множитель 2: задержки 500 мс → 1000 мс.
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        # 404 — ресурса нет, повтор не поможет.
+        # CallNotPermittedException — CB открыт, каждая попытка
+        # немедленно отклоняется, но Retry всё равно тратит на них задержки.
+        # ServiceUnavailableException — bulkhead-fallback, retry бессмысленен.
+        ignore-exceptions:
+          - com.cineflow.screening.exception.MovieNotFoundException
+          - com.cineflow.screening.exception.ServiceUnavailableException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException
+
+      theater-service:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.cineflow.screening.exception.HallNotFoundException
+          - com.cineflow.screening.exception.TheaterNotFoundException
+          - com.cineflow.screening.exception.ServiceUnavailableException
+          - io.github.resilience4j.circuitbreaker.CallNotPermittedException

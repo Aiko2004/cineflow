@@ -1,0 +1,20 @@
+# Normalize line endings: Git decides text vs binary, checks out native EOL.
+* text=auto
+
+# Shell scripts must stay LF even on Windows checkouts — the Linux CI runner
+# executes gradlew via `sh`, and CRLF breaks it: `/usr/bin/env: 'sh\r': No such file`.
+gradlew      text eol=lf
+*.sh         text eol=lf
+
+# Windows batch files must stay CRLF.
+gradlew.bat  text eol=crlf
+*.bat        text eol=crlf
+
+# Binary assets — never touch EOL, never diff as text.
+*.jar        binary
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.ico        binary
+*.pdf        binary

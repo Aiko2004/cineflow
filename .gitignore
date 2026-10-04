@@ -1,0 +1,39 @@
+# --- Secrets ---
+# .env на любом уровне (корень монорепо, модули). .env-example остаётся в репозитории.
+.env
+**/.env
+!**/.env-example
+!**/.env.example
+
+# --- Gradle / build ---
+.gradle/
+**/.gradle/
+build/
+**/build/
+out/
+**/out/
+# gradle-wrapper.jar НЕ игнорируется — CI собирает через wrapper.
+!gradle/wrapper/gradle-wrapper.jar
+
+# --- IDE ---
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# --- Spring Initializr scaffolding ---
+HELP.md
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Frontend (Angular) — задел под будущий frontend/ ---
+node_modules/
+dist/
+.angular/

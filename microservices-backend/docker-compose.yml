@@ -1,0 +1,79 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: mongo-cineflow
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+      MONGO_INITDB_DATABASE: screening
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # Postgres — общий инстанс для сервисов на реляционной БД (movie, theater, auth, booking).
+  # Логические БД создаёт companion-сервис postgres-init (см. ниже) — на КАЖДЫЙ up,
+  # идемпотентно. Скрипт из docker-entrypoint-initdb.d здесь НЕ используется: он отрабатывает
+  # только при первой инициализации тома, поэтому на существующем томе недостающая БД
+  # не создавалась и её приходилось добавлять руками.
+  postgres:
+    image: postgres:16
+    container_name: postgres-cineflow
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      # Host-порт переопределяемый: на машине с уже установленным нативным PostgreSQL
+      # порт 5432 занят, и localhost:5432 у приложения попадёт в него, а не в контейнер.
+      # Тогда: DB_HOST_PORT=5433 (в .env) + DB_PORT=5433 у сервисов.
+      - "${DB_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # Создаёт недостающие логические БД на КАЖДЫЙ `docker compose up` — независимо от того,
+  # свежий том или существующий. Скрипт идемпотентен (CREATE DATABASE только если ещё нет),
+  # поэтому повторные запуски безопасны. Контейнер отрабатывает и завершается (restart: no).
+  # Подключается к postgres по внутренней сети (host = имя сервиса), host-порт неважен.
+  postgres-init:
+    image: postgres:16
+    container_name: postgres-init-cineflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - ./docker/postgres-init:/init:ro
+    entrypoint:
+      - psql
+      - -h
+      - postgres
+      - -U
+      - ${DB_USER:-postgres}
+      - -v
+      - ON_ERROR_STOP=1
+      - -f
+      - /init/01-create-databases.sql
+    restart: "no"
+
+  # Redis — OTP-коды (Hash с TTL) и счётчики rate limit для auth-service.
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cineflow
+    ports:
+      # Тот же приём, что и с postgres: при нативном Redis на 6379 задать
+      # REDIS_HOST_PORT=6380 + REDIS_PORT=6380 у сервисов.
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mongo_data:
+  postgres_data:
+  redis_data:
