@@ -12,7 +12,7 @@ dependencies {
     // grpc-netty-shaded — транспорт сервера (свой шейдед netty, не конфликтует с Tomcat/Reactor).
     // Версию НЕ фиксируем ниже BOM: Spring Boot BOM тянет grpc-core 1.83.1, и старый
     // grpc-netty-shaded дал бы AbstractMethodError (несовпадение внутреннего интерфейса сервера).
-    implementation("io.grpc:grpc-netty-shaded:1.83.1")
+    implementation("io.grpc:grpc-netty-shaded:1.84.0")
 
     implementation("org.springframework.boot:spring-boot-starter-data-mongodb")
     implementation("org.springframework.boot:spring-boot-starter-validation")

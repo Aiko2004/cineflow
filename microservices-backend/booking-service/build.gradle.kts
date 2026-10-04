@@ -7,7 +7,7 @@ description = "booking-service"
 
 // gRPC runtime канала. 1.83.1 — совпадает с grpc-core, который тянет Spring Boot BOM
 // (иначе AbstractMethodError из-за смешения версий grpc-netty-shaded и grpc-core).
-val grpcVersion = "1.83.1"
+val grpcVersion = "1.84.0"
 
 dependencies {
     // Контракты: enum SeatType + сгенерированные gRPC-стабы screening.proto.

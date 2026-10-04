@@ -30,7 +30,7 @@ plugins {
 // тянет protobuf-java 3.25.x, мы поднимаем до 4.28.3). В рантайме сервисов BOM поднимает
 // protobuf-java до 4.35.1 — сгенерированный protoc 4.28.3 код обратно совместим с ним
 // (protobuf гарантирует forward-compat сгенерированного кода к более новому рантайму).
-val grpcVersion = "1.83.1"
+val grpcVersion = "1.84.0"
 val protobufVersion = "4.28.3"
 
 dependencies {
