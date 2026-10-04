@@ -31,7 +31,7 @@ plugins {
 // protobuf-java до 4.35.1 — сгенерированный protoc 4.28.3 код обратно совместим с ним
 // (protobuf гарантирует forward-compat сгенерированного кода к более новому рантайму).
 val grpcVersion = "1.83.1"
-val protobufVersion = "4.28.3"
+val protobufVersion = "4.36.2"
 
 dependencies {
     // compileOnly: Jackson-аннотации нужны на компиляции, рантайм есть у потребителей.
