@@ -15,7 +15,7 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7" apply false
     // protobuf-плагин: компилирует .proto в Java (сообщения + gRPC-стабы).
     // Применяется только в contracts (там лежит .proto); здесь объявлен один раз с apply false.
-    id("com.google.protobuf") version "0.9.4" apply false
+    id("com.google.protobuf") version "0.10.0" apply false
 }
 
 allprojects {
