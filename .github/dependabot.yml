@@ -12,6 +12,18 @@ updates:
         patterns:
           - "org.springframework*"
           - "io.spring.*"
+    ignore:
+      # gRPC пинуется вручную РАВНЫМ версии из Spring Boot BOM (см. CLAUDE.md, раздел gRPC).
+      # Самостоятельный бамп ломает это равенство → AbstractMethodError в рантайме.
+      # Поднимается только вместе с Spring Boot.
+      - dependency-name: "io.grpc:*"
+      # protoc (генератор) не может быть новее protobuf-java в рантайме, а рантайм
+      # задаёт Spring Boot BOM. Сгенерированный более новым protoc код отказывается
+      # работать со старым рантаймом. Поднимается вручную, вслед за BOM.
+      - dependency-name: "com.google.protobuf:*"
+      # Мажорные версии — только осознанно, с чтением changelog (nimbus 9→10 и т.п.).
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions used by the workflows in this repo.
   - package-ecosystem: github-actions
