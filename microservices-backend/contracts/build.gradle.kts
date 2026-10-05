@@ -35,7 +35,7 @@ val protobufVersion = "4.28.3"
 
 dependencies {
     // compileOnly: Jackson-аннотации нужны на компиляции, рантайм есть у потребителей.
-    compileOnly("com.fasterxml.jackson.core:jackson-annotations:2.21")
+    compileOnly("com.fasterxml.jackson.core:jackson-annotations:2.22")
 
     // api: сгенерированный код ссылается на эти классы, значит они должны попасть
     // на compile-classpath потребителей contracts (транзитивно).
