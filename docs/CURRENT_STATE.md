@@ -1,7 +1,7 @@
 # CineFlow — текущее состояние
 
 > Документ для передачи контекста в новый чат. Обновлять по ходу работы.
-> Последнее обновление: 1 октября 2026 (закрыты 5 долгов: gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту; сквозной прогон на чистых томах).
+> Последнее обновление: 5 октября 2026 (репозиторий опубликован на GitHub: CI на каждый PR, ruleset `protect-main`, политика Dependabot). До этого: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
 
 ## Как работаем
 
@@ -13,12 +13,12 @@
 
 ```
 D:\web-projects\CineFlow\     ← корень git-репозитория (git init делает пользователь)
-├── README.md                ← портфолио-обзор (англ.), бейдж CI (плейсхолдер <owner>/<repo>)
+├── README.md                ← портфолио-обзор (англ.), бейдж CI (Aiko2004/cineflow)
 ├── LICENSE                  ← MIT (Aikyn, 2026)
 ├── .gitignore / .gitattributes  ← корневые, на весь монорепо
 ├── .github\
-│   ├── workflows\backend-ci.yml ← CI: push/PR в main, paths-фильтр microservices-backend/**
-│   └── dependabot.yml       ← gradle + github-actions, weekly
+│   ├── workflows\backend-ci.yml ← CI: push в main + каждый PR, без paths-фильтров
+│   └── dependabot.yml       ← gradle + github-actions, weekly, с ignore-правилами (см. «Следующий шаг»)
 ├── docs\
 │   ├── PROJECT_PLAN.md      ← архитектура, roadmap, доменная модель
 │   ├── AUTH_DESIGN.md / BOOKING_DESIGN.md / STUDY_GUIDE.md
@@ -70,7 +70,7 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 
 | Решение | Причина |
 |---|---|
-| Монорепо (Gradle multi-module) | Один PR часто трогает несколько сервисов; CI с path-фильтрами всё равно собирает только изменённое. В проде обычно полирепо — это осознанный компромисс для соло-разработки |
+| Монорепо (Gradle multi-module) | Один PR часто трогает несколько сервисов; CI собирает весь монорепо на каждый PR (path-фильтры убраны — см. «Следующий шаг»). В проде обычно полирепо — это осознанный компромисс для соло-разработки |
 | ID: `Long` в theater-service, UUID в screening-service | Контракт фронтенда требует `string` (UUID) везде, но theater-service уже написан на `Long`. Решили не переписывать сейчас — унифицируем, когда разнородность реально заболит на стыке с Booking Service |
 | UUIDv7 (не v4) для screening | Time-ordered: глобально уникален без координации, но монотонно растёт → дружелюбен к индексам. Библиотека `com.github.f4b6a3:uuid-creator` |
 | Screening в MongoDB как денормализованный документ | DDD-обоснование из курса: расписание — самый горячий read-путь, документ уже готов к отдаче без join'ов и синхронных вызовов в другие сервисы |
@@ -129,7 +129,23 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 
 ## Следующий шаг (актуальный)
 
-**Подготовка к первому коммиту в публичный GitHub (5 окт).** `./gradlew build` зелёный после уборки (52 задачи executed). `git init` делает пользователь сам — корень репо `D:\web-projects\CineFlow` (не `microservices-backend`).
+**Репозиторий опубликован: github.com/Aiko2004/cineflow (5 окт).** Настройка защиты main и CI завершена; прямой push в main закрыт — любое изменение (в т.ч. документации) идёт через PR.
+
+Что сделано (всё проверено вживую):
+1. **CI на каждый PR.** Из `backend-ci.yml` убраны оба `paths:`-фильтра (PR #10). Причина: check `build` обязателен в ruleset; PR, не затрагивающий `microservices-backend/`, при paths-фильтре не запускает workflow, и обязательная проверка висит в «Expected — waiting» навсегда — такой PR нельзя смержить. Причина записана комментарием в самом workflow.
+2. **Ruleset `protect-main`** (id 24491455, enforcement active, цель — `~DEFAULT_BRANCH`, `bypass_actors: []`): PR обязателен (0 апрувов, разрешён только squash), required check `build` со `strict` (ветка должна быть актуальна относительно main), запрет force push (`non_fast_forward`) и удаления ветки. **Исключений нет даже для владельца** (`current_user_can_bypass: never`). Проверено: пустой коммит в main → `git push` отклонён (`GH013`: «Changes must be made through a pull request», «Required status check "build" is expected»).
+3. **Dependabot смержено:** gradle-wrapper 9.6.1 → 9.8.0 (#3), `uuid-creator` 6.0.0 → 6.1.1 (#4). Перед мержем каждый PR пересобран (`@dependabot rebase`) и прошёл CI на актуальном main.
+4. **Бейдж CI в README** указывает на `Aiko2004/cineflow` (раньше был плейсхолдер `<owner>/<repo>`).
+
+**Политика Dependabot** (`.github/dependabot.yml`): `io.grpc:*`, `com.google.protobuf:*` и все мажорные версии игнорируются и поднимаются **вручную, вместе со Spring Boot**. Причина для grpc/protobuf: версии выровнены на Spring Boot BOM (см. «Принятые решения»); самостоятельный бамп ломает равенство → `AbstractMethodError` в рантайме. Мажорные — только осознанно, с чтением changelog.
+
+⚠️ **Дыра в ignore-правилах (обнаружена вживую, не исправлена).** Gradle-плагин `id("com.google.protobuf")` Dependabot называет `com.google.protobuf` (без `:`), поэтому правило `com.google.protobuf:*` его не покрывает — пришёл PR #9 (0.9.4 → 0.10.0; это 0.x-минор, `semver-major` его тоже не ловит). Совместим ли плагин 0.10.0 с нашей связкой protoc 4.28.3 / grpc 1.83.1 — **не проверено**. Решение по #9 и по правилу (добавить `dependency-name: "com.google.protobuf"` в ignore или принимать плагин осознанно) — открыто. Открыты также #7 (springdoc 3.0.3 → 3.1.1) и #8 (jackson-annotations 2.21 → 2.22) — в этот шаг не входили.
+
+**Побочное наблюдение (не исправлено):** после мержа #3 `microservices-backend/gradlew.bat` в рабочей копии на Windows сразу показывается как изменённый, хотя содержимое отличается только концами строк (`git diff --ignore-space-at-eol` пуст). Предположительно, Dependabot закоммитил файл с CRLF, а `.gitattributes` (`*.bat text eol=crlf`) нормализует его в LF; причина не проверялась. На CI не влияет.
+
+---
+
+**Предыдущий шаг (завершён): подготовка к первому коммиту в публичный GitHub (5 окт).** `./gradlew build` зелёный после уборки (52 задачи executed). `git init` делает пользователь сам — корень репо `D:\web-projects\CineFlow` (не `microservices-backend`).
 
 Что сделано:
 1. **Мусор модулей-как-отдельных-проектов удалён** (35 объектов): per-module `.gitignore`/`.gitattributes`/`HELP.md`/`*.iml`/`.gradle\` в 6 модулях; `microservices-backend/.idea/` целиком; `screening-service/compose.yaml` (устаревший Initializr-скелет — `mongo:latest`, БД `mydatabase`, ничего уникального относительно корневого `docker-compose.yml`); `microservices-backend/.gitignore` и `README.md` (устаревший скелет чужого проекта «booking-marketplace» — не переносился). auth/booking таких файлов не имели.

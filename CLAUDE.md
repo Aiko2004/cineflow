@@ -31,7 +31,7 @@ CineFlow/                      корень git-репозитория
 ├── LICENSE                    MIT
 ├── .gitignore / .gitattributes   корневые, на весь монорепо (eol=lf для gradlew/*.sh)
 ├── .github/
-│   ├── workflows/backend-ci.yml  сборка на push/PR в main (paths: microservices-backend/**)
+│   ├── workflows/backend-ci.yml  сборка на push в main и на каждый PR (без paths-фильтров — check `build` обязателен в ruleset)
 │   └── dependabot.yml         gradle + github-actions, weekly, Spring сгруппирован
 ├── docs/                      план и текущее состояние
 └── microservices-backend/     Gradle monorepo

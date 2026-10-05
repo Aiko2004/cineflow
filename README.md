@@ -1,6 +1,6 @@
 # CineFlow
 
-[![Backend CI](https://github.com/<owner>/<repo>/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/<owner>/<repo>/actions/workflows/backend-ci.yml)
+[![Backend CI](https://github.com/Aiko2004/cineflow/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/Aiko2004/cineflow/actions/workflows/backend-ci.yml)
 
 A cinema ticket-selling platform built on a microservices architecture — a learning and
 portfolio project. It reimplements the backend of the [TeaCinema](https://github.com/TeaCoder52/teacinema-public)
