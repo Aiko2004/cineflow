@@ -23,7 +23,7 @@ dependencies {
     implementation("com.nimbusds:nimbus-jose-jwt:9.48")
 
     // UUIDv7 — time-ordered UUID, дружелюбен к индексам (см. AUTH_DESIGN.md §"Про версию UUID").
-    implementation("com.github.f4b6a3:uuid-creator:6.0.0")
+    implementation("com.github.f4b6a3:uuid-creator:6.1.1")
 
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
