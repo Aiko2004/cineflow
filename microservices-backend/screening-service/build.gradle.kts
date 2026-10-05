@@ -35,7 +35,7 @@ dependencies {
 
     // UUIDv7 — time-ordered UUID: глобально уникален без координации,
     // но в отличие от UUIDv4 монотонно растёт, поэтому дружелюбен к индексам.
-    implementation("com.github.f4b6a3:uuid-creator:6.0.0")
+    implementation("com.github.f4b6a3:uuid-creator:6.1.1")
 
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")

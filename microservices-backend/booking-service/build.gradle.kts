@@ -35,7 +35,7 @@ dependencies {
     // Стабы и protobuf-java приходят транзитивно из :contracts (api).
     implementation("io.grpc:grpc-netty-shaded:$grpcVersion")
 
-    implementation("com.github.f4b6a3:uuid-creator:6.0.0")
+    implementation("com.github.f4b6a3:uuid-creator:6.1.1")
 
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
