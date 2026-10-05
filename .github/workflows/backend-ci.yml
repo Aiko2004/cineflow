@@ -1,15 +1,13 @@
 name: Backend CI
 
+# No `paths:` filters on purpose. The `build` check is required by the `protect-main`
+# ruleset. A PR that doesn't touch microservices-backend/ would not trigger the workflow
+# under a paths filter, and the required check would sit in "Expected — waiting" forever,
+# making that PR unmergeable. So the workflow runs on every PR and every push to main.
 on:
   push:
     branches: [main]
-    paths:
-      - 'microservices-backend/**'
-      - '.github/workflows/backend-ci.yml'
   pull_request:
-    paths:
-      - 'microservices-backend/**'
-      - '.github/workflows/backend-ci.yml'
 
 # Cancel an in-progress run when a new commit is pushed to the same ref.
 concurrency:
