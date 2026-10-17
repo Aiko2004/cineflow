@@ -1,7 +1,7 @@
 # CineFlow — текущее состояние
 
 > Документ для передачи контекста в новый чат. Обновлять по ходу работы.
-> Последнее обновление: 17 октября 2026 (уборка: PAYMENT_DESIGN.md в репо, нормализация `gradlew.bat`, `/swagger-ui.html` в permitAll). До этого: 5 октября — репозиторий опубликован на GitHub (CI на каждый PR, ruleset `protect-main`, политика Dependabot); ещё раньше: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
+> Последнее обновление: 18 октября 2026 (Фаза 4, PR 1: Kafka в compose, payment-service с outbox + relay; Dependabot #14 смержен). До этого: 17 октября — уборка (PAYMENT_DESIGN.md в репо, нормализация `gradlew.bat`, `/swagger-ui.html` в permitAll); 5 октября — репозиторий опубликован на GitHub (CI на каждый PR, ruleset `protect-main`, политика Dependabot); ещё раньше: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
 
 ## Как работаем
 
@@ -34,7 +34,8 @@ D:\web-projects\CineFlow\     ← корень git-репозитория (git i
     ├── theater-service\     ← порт 8082, Postgres (БД theater)
     ├── screening-service\   ← порт 8083, MongoDB (+ gRPC-сервер 9083)
     ├── auth-service\        ← порт 8084, Postgres (БД auth) + Redis
-    └── booking-service\     ← порт 8085, Postgres (БД booking) + Redis
+    ├── booking-service\     ← порт 8085, Postgres (БД booking) + Redis
+    └── payment-service\     ← порт 8086, Postgres (БД payment) + Kafka
 ```
 
 Frontend пока не начат. Оригинальный Next.js-фронтенд: https://github.com/TeaCoder52/teacinema-public
@@ -62,9 +63,11 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 
 **Первый gRPC в проекте** — `booking → screening` `GetScreening` (валидация сеанса + денормализация одним вызовом). `.proto` в `contracts`, стабы генерит `com.google.protobuf`-плагин; screening поднимает `io.grpc.Server` на 9083 через `SmartLifecycle`; booking зовёт blocking-стаб под CB/bulkhead/retry. Feign к theater (места) — по конвенции. Детали и грабли версий — в `CLAUDE.md` (раздел gRPC).
 
-**Сборка** — `./gradlew build` проходит целиком, **включая Testcontainers-тесты (89 тестов, 0 падений: auth 13, movie 47, screening 19, booking 10)** — прогнано с живым Docker. Версии плагинов только в корне (добавлен `com.google.protobuf` apply false; Kotlin-плагин удалён — проект на чистой Java).
+**Kafka + payment-service (Фаза 4, PR 1 из двух; см. `docs/PAYMENT_DESIGN.md`, раздел «Kafka и payment-service» в `CLAUDE.md`).** В compose — брокер `apache/kafka:4.3.1` (KRaft) и Kafka UI (`kafbat/kafka-ui:v1.5.0`, :8090), автосоздание топиков выключено. `payment-service` (:8086): платёж + автомат `PaymentStatus` с условными переходами, transactional outbox (`OutboxWriter` — `MANDATORY`) и relay в Kafka, `POST /internal/payments` (идемпотентно по `bookingId`), `GET /payment/{id}`, `PaymentGateway` + симулятор Kaspi (создание счёта, статус). Контракты событий/команд — `contracts/.../payment`. Gateway: маршрут `/payment/**` (`/internal/**` не маршрутизируется). **Не сделано (PR 2):** webhook с HMAC, сверка, возвраты, потребитель `payment.commands` с DLT, dev-эндпоинты симулятора; **инкремент 3** — оркестрация в booking.
 
-**Инфраструктура:** Postgres, MongoDB и Redis в Docker (`docker-compose.yml`). Логические БД (`movies`/`theater`/`auth`/`booking`) создаёт **companion-сервис `postgres-init`** на каждый `docker compose up` (depends_on healthcheck postgres, идемпотентный `\gexec`-скрипт) — работает и на свежем, и на существующем томе (прежний initdb.d отрабатывал только на свежем). Конфиг через `${VAR:default}` + `.env`, `.env-example` в репозитории. ⚠️ Нативные Postgres/Redis на 5432/6379 → поднимать с `DB_HOST_PORT=5433 REDIS_HOST_PORT=6380` + сервисам `DB_PORT=5433 REDIS_PORT=6380`.
+**Сборка** — `./gradlew build` проходит целиком, **включая Testcontainers-тесты (120 тестов, 0 падений: auth 13, movie 47, screening 19, booking 10, payment 31)** — прогнано с живым Docker. Версии плагинов только в корне (добавлен `com.google.protobuf` apply false; Kotlin-плагин удалён — проект на чистой Java).
+
+**Инфраструктура:** Postgres, MongoDB, Redis, **Kafka и Kafka UI** в Docker (`docker-compose.yml`). Логические БД (`movies`/`theater`/`auth`/`booking`/`payment`) создаёт **companion-сервис `postgres-init`** на каждый `docker compose up` (depends_on healthcheck postgres, идемпотентный `\gexec`-скрипт) — работает и на свежем, и на существующем томе (прежний initdb.d отрабатывал только на свежем). Конфиг через `${VAR:default}` + `.env`, `.env-example` в репозитории. ⚠️ Нативные Postgres/Redis на 5432/6379 → поднимать с `DB_HOST_PORT=5433 REDIS_HOST_PORT=6380` + сервисам `DB_PORT=5433 REDIS_PORT=6380`.
 
 ## Принятые решения и их причины
 
@@ -94,6 +97,13 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 | gRPC-версии выровнены на BOM (1.83.1) **везде** | Spring Boot BOM тянет grpc-core 1.83.1. И `grpc-netty-shaded` в сервисах, и grpc-stub/protobuf/protoc-gen-grpc-java в `contracts` (BOM не применяется → пин явный) держим 1.83.1. Иначе генерённый код компилируется против одной версии, исполняется на другой (`AbstractMethodError`). protobuf-java рантайм (4.35.1) может быть старше generated (4.28.3) — forward-совместимо |
 | gRPC-порт 9083 — внутренний, bind на loopback | Не за gateway, не публикуется в compose; по умолчанию `127.0.0.1` (`NettyServerBuilder.forAddress`) → недоступен из LAN. «Внутренний» — факт, не допущение. mTLS избыточен для этой модели угроз; шов в `GrpcServer`. Обоснование — BOOKING_DESIGN.md §5 |
 | `Booking implements Persistable` | App-assigned UUID + коллекция: без `isNew()` `save()` уходит в `merge()` и ломает каскад. Persistable форсит `persist()` |
+| Transactional outbox + relay (поллинг), а не публикация в Kafka из кода | Смена статуса и событие пишутся одной локальной транзакцией — dual write невозможен. `OutboxWriter` с `Propagation.MANDATORY` превращает правило в проверку: вызов вне транзакции падает. Приём платежей не зависит от брокера (проверено: при остановленной Kafka платёж принимается, событие уходит после её возврата) |
+| Relay шлёт по одному сообщению с ожиданием и прерывает пачку на первой ошибке | Не обгоняем неотправленное сообщение того же `bookingId`. Цена — пропускная способность; для объёмов проекта неважна |
+| Тип сообщения — поле `type` в теле JSON, не заголовок `__TypeId__` | Заголовок по умолчанию — полное имя Java-класса: связывает сервисы именами пакетов и не читается из не-Java-сервисов; сообщение, положенное руками в Kafka UI, без заголовка не десериализуется. Логические имена — в `@JsonSubTypes` контракта |
+| Значение в Kafka — готовый JSON-`String` (`StringSerializer`) | В outbox уже лежит сериализованное сообщение; повторная сериализация незачем, и в Kafka уходит ровно записанное. Актуальные Jackson-3 сериализаторы Spring Kafka (`JacksonJson*`) понадобятся на стороне потребителя |
+| Топики — `NewTopic`-бины в payment-service, а не init-контейнер | Определение топика в коде рядом с владельцем, одинаково работает в dev/тестах/проде. Минус: создаются только при старте сервиса (см. `CLAUDE.md`) |
+| `POST /internal/payments` не через gateway; межсервисной аутентификации нет | Сумму присылает вызывающий — наружу нельзя. Осознанное ограничение (порт 8086 общий с публичными путями, защита сетевая), см. `PAYMENT_DESIGN.md §7`; дальше — client credentials/mTLS |
+| Платёж `PENDING` пишется ДО вызова провайдера | Намерение фиксируется раньше внешнего действия; «PENDING без счёта» самовосстанавливается повтором (провайдер идемпотентен по `paymentId`). Обратный порядок оставлял бы счёт, о котором мы не знаем |
 
 ## Незакрытые вопросы и известные долги
 
@@ -128,6 +138,27 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 | тестовые стартеры не разделены | `spring-boot-starter-data-jpa-test` и т.д. | применено |
 
 ## Следующий шаг (актуальный)
+
+**Фаза 4, PR 1 «Kafka + скелет payment-service» (18 окт, ветка `feat/kafka-payment-skeleton`) — готов, ждёт ревью.** Дальше — PR 2 (`feat/payment-webhook-refund`): симулятор «приложения Kaspi» с dev-эндпоинтами и отправкой webhook, публичный webhook с HMAC-SHA256, сверка и истечение, потребитель `payment.commands` (`RefundPayment`, `CancelInvoice`) с повторами и `.DLT`. Инкремент 3 (оркестрация в booking: `/payment/init`, потребитель `payment.events`, закрытие заглушки `confirm`) — после.
+
+Что проверено вживую в PR 1 (стек: Postgres/Redis/Kafka в Docker, eureka + auth + gateway + payment-service):
+- Kafka и Kafka UI поднимаются; env-переменные `apache/kafka:4.3.1` рабочие; автосоздание топиков выключено (продюсер в несуществующий топик получает `UnknownTopicOrPartition`); Kafka UI видит кластер `ONLINE` и все четыре топика.
+- Топики создаются при старте payment-service (по 3 партиции, включая `.DLT`) — в том числе на чистом томе.
+- `KAFKA_HOST_PORT=9094`: клиент с хоста подключается на 9094, на 9092 — нет (advertised listener следует за host-портом).
+- Найден и исправлен дефект собственной конфигурации: без `KAFKA_LOG_DIRS` брокер писал данные не в том, где смонтирован том, и топики исчезали при пересоздании контейнера. После исправления проверено: данные переживают пересоздание.
+- `POST /internal/payments` напрямую на :8086 с токеном: 201; повтор — тот же платёж; другая сумма — 409; без токена — 401; через gateway `/internal/payments` — 404; `GET /payment/{id}` через gateway — 200 владельцу и 401 без токена.
+- Relay: строка в outbox уходит в `payment.events` за ≤ 1 с, ключ = `bookingId`, заголовков нет (`NO_HEADERS`), `published_at` проставлен.
+- Kafka остановлена → payment-service перезапущен (стартует, но **~52 с вместо ~9**) → платёж принимается (201) → строка outbox остаётся неопубликованной, в логе предупреждения relay → Kafka запущена → строка доставлена.
+
+**Не проверено вживую / открыто:**
+- Потребитель Kafka (десериализация `JacksonJsonDeserializer` + `ErrorHandlingDeserializer`, `DefaultErrorHandler` + `DeadLetterPublishingRecoverer`) — PR 2.
+- Работа relay с **несколькими** экземплярами (порядок внутри ключа при `SKIP LOCKED` не гарантирован — `PAYMENT_DESIGN.md §4`).
+- Топики создаются только при старте payment-service; если Kafka недоступна на старте — они не появятся до рестарта (поведение описано, воспроизведено только в части «сервис стартует»).
+- Тесты `booking`/`auth`/`movie` используют `org.testcontainers.containers.PostgreSQLContainer`, помеченный `@Deprecated` в Testcontainers 2.0.5 (payment уже на `org.testcontainers.postgresql.PostgreSQLContainer`); миграция остальных — отдельной мелкой правкой.
+
+**Dependabot #14 (gradle-wrapper 9.8.0 → 9.8.1, 17 окт) смержен** (`18a6d8e`) после `@dependabot rebase` и зелёного CI на актуальном main. Проверено в диффе: изменены только `gradle-wrapper.jar` и `gradle-wrapper.properties`; `distributionUrl` ведёт на `services.gradle.org` (`gradle-9.8.1-bin.zip`); `gradlew` остался `100755`; `gradlew.bat` не менялся (LF в индексе). SHA-256 нового `gradle-wrapper.jar` (`3b8a2577…8e98`) совпал с официальным `services.gradle.org/distributions/gradle-9.8.1-wrapper.jar.sha256`. Проблема CRLF в `gradlew.bat` в этот раз не повторилась, но только потому, что бот не трогал этот файл; на будущих бампах по-прежнему смотреть дифф.
+
+---
 
 **Репозиторий опубликован: github.com/Aiko2004/cineflow (5 окт).** Настройка защиты main и CI завершена; прямой push в main закрыт — любое изменение (в т.ч. документации) идёт через PR.
 

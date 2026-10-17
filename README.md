@@ -24,9 +24,10 @@ breadth of features.
 | `screening-service` | 8083 (+ gRPC 9083) | MongoDB | Screenings as denormalized documents |
 | `auth-service` | 8084 | PostgreSQL + Redis | Accounts, OTP login, JWT issuing/refresh |
 | `booking-service` | 8085 | PostgreSQL + Redis | Seat holds, bookings, QR tickets |
+| `payment-service` | 8086 | PostgreSQL + Kafka | Invoices via a Kaspi-style simulator, transactional outbox (webhook, refunds and the saga with booking are not built yet) |
 
-Each relational service owns its own logical database (`movies`, `theater`, `auth`, `booking`)
-on a shared PostgreSQL instance. Inter-service calls are REST/Feign by default; the single
+Each relational service owns its own logical database (`movies`, `theater`, `auth`, `booking`,
+`payment`) on a shared PostgreSQL instance. Inter-service calls are REST/Feign by default; the single
 gRPC call is `booking → screening`.
 
 ### Target architecture
@@ -149,8 +150,8 @@ Requires **JDK 21** and **Docker**. All commands run from `microservices-backend
 ```bash
 cd microservices-backend
 
-# 1. Start infrastructure (PostgreSQL, MongoDB, Redis). The postgres-init companion
-#    creates the per-service databases idempotently on every `up`.
+# 1. Start infrastructure (PostgreSQL, MongoDB, Redis, Kafka + Kafka UI on :8090). The
+#    postgres-init companion creates the per-service databases idempotently on every `up`.
 docker compose up -d
 
 # 2. Build everything (runs Testcontainers integration tests — Docker must be running).
@@ -182,7 +183,8 @@ rebook). The build is green including Testcontainers integration tests.
 
 **Not started / planned** (see the roadmap in [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)):
 
-- Payment service and the Booking ↔ Payment saga (the current booking increment has no payment)
+- Payment webhook, refunds and the Booking ↔ Payment saga (payment-service creates invoices and
+  publishes events through an outbox; booking does not call it yet and still has no payment)
 - Notification service (Kafka → RabbitMQ) and Analytics service (ClickHouse)
 - Media service (Go, via gRPC) and Users service
 - Keycloak for admin/manager roles
