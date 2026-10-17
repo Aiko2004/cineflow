@@ -1,0 +1,89 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: payment-service
+  # Провайдер платежей по умолчанию — симулятор Kaspi. Это именно «профиль по умолчанию»:
+  # он действует, только если НИ ОДИН профиль не активирован явно. Активировали другой
+  # профиль (например prod) без kaspi-sim — бина PaymentGateway нет, сервис не стартует.
+  # Это сознательно: лучше упасть на старте, чем молча работать без провайдера.
+  profiles:
+    default: kaspi-sim
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${PAYMENT_DB_NAME:payment}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    baseline-on-migrate: false
+  jackson:
+    datatype:
+      enum:
+        # Jackson 3: фича переехала в EnumFeature → ключ datatype.enum.* (см. CLAUDE.md).
+        # Нужна для @JsonEnumDefaultValue (UNKNOWN) в enum'ах contracts.
+        read-unknown-enum-values-using-default-value: true
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+        default-page-size: 20
+  task:
+    scheduling:
+      # По умолчанию пул @Scheduled — ОДИН поток: медленный relay (ждёт брокера) заблокировал
+      # бы остальные фоновые задачи сервиса (сверка, повтор возвратов).
+      pool:
+        size: 4
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${JWKS_URI:http://localhost:8084/.well-known/jwks.json}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Гарантии продюсера заданы ЯВНО. В kafka-clients 4.2.1 это и так дефолты
+      # (acks=all, enable.idempotence=true — проверено чтением ProducerConfig), но
+      # молчаливый дефолт — неочевидная зависимость от версии клиента.
+      #  acks=all: лидер отвечает после записи на все in-sync реплики — подтверждённое
+      #            сообщение не пропадёт при потере лидера.
+      #  idempotence: брокер отбрасывает дубль, возникший из-за внутреннего retry продюсера
+      #            (ответ потерялся — продюсер повторил). Это НЕ защита от повторной отправки
+      #            relay'ем после падения до UPDATE published_at: для брокера это новый send.
+      #            Такие дубли гасит идемпотентность потребителя по eventId.
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Значение — String: в outbox уже лежит готовый JSON. Сериализовать второй раз незачем,
+      # и в сообщении гарантированно ровно то, что записано в таблицу. Заголовка __TypeId__
+      # (полное имя Java-класса) при этом не появляется вообще — см. PaymentMessage.
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        # Продюсер сам гарантирует, что send() завершится (успехом или ошибкой) не позже
+        # max.block.ms + delivery.timeout.ms. Relay ждёт чуть дольше (cineflow.payment.outbox.
+        # send-timeout) — так «брошенных» сообщений, которые продюсер дошлёт позже уже после
+        # того, как relay сдался и повторит отправку, не остаётся.
+        delivery.timeout.ms: 15000
+        request.timeout.ms: 5000
+        max.block.ms: 5000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+cineflow:
+  payment:
+    # Срок жизни счёта. Должен быть КОРОЧЕ удержания брони (booking: 10 мин), иначе
+    # оплата чаще приходит к уже истёкшей брони (PAYMENT_DESIGN.md §3, сценарий 3).
+    invoice-ttl: ${PAYMENT_INVOICE_TTL:8m}
+    currency: KZT
+    # Фактор репликации топиков: 1 — потому что в dev один брокер. В проде — 3.
+    topic-replicas: ${PAYMENT_TOPIC_REPLICAS:1}
+    outbox:
+      interval: 1000        # мс между тиками relay (fixedDelay: тик не стартует, пока идёт прошлый)
+      batch-size: 50
+      send-timeout: 25s     # = max.block.ms + delivery.timeout.ms + запас 5 с
