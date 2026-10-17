@@ -1,7 +1,7 @@
 # CineFlow — текущее состояние
 
 > Документ для передачи контекста в новый чат. Обновлять по ходу работы.
-> Последнее обновление: 5 октября 2026 (репозиторий опубликован на GitHub: CI на каждый PR, ruleset `protect-main`, политика Dependabot). До этого: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
+> Последнее обновление: 17 октября 2026 (уборка: PAYMENT_DESIGN.md в репо, нормализация `gradlew.bat`, `/swagger-ui.html` в permitAll). До этого: 5 октября — репозиторий опубликован на GitHub (CI на каждый PR, ruleset `protect-main`, политика Dependabot); ещё раньше: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
 
 ## Как работаем
 
@@ -21,7 +21,7 @@ D:\web-projects\CineFlow\     ← корень git-репозитория (git i
 │   └── dependabot.yml       ← gradle + github-actions, weekly, с ignore-правилами (см. «Следующий шаг»)
 ├── docs\
 │   ├── PROJECT_PLAN.md      ← архитектура, roadmap, доменная модель
-│   ├── AUTH_DESIGN.md / BOOKING_DESIGN.md / STUDY_GUIDE.md
+│   ├── AUTH_DESIGN.md / BOOKING_DESIGN.md / PAYMENT_DESIGN.md / STUDY_GUIDE.md
 │   └── CURRENT_STATE.md     ← этот файл
 └── microservices-backend\   ← Gradle monorepo (rootProject.name = "microservices-backend")
     ├── build.gradle.kts     ← версии плагинов объявлены здесь один раз
@@ -145,9 +145,11 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 - **#8** jackson-annotations 2.21 → 2.22 (`390b924`). В `contracts` это `compileOnly` — нужен только на компиляции, рантаймовую версию задаёт Spring Boot BOM.
 - **#7** springdoc 3.0.3 → 3.1.1 (`3406573`). Тесты не проверяют, что Swagger UI отрисовывается, а springdoc тесно связан с версией Boot, поэтому до мержа проверено вживую на ветке PR: movie-service поднялся, `/swagger-ui/index.html`, `swagger-ui-bundle.js`, `swagger-initializer.js`, `/v3/api-docs/swagger-config` и `/v3/api-docs` (3.1.0-спецификация с `/movies`, `/movies/{id}`) — всё 200. **Не проверено:** визуальная отрисовка в браузере (проверка шла по HTTP-ответам).
 
-⚠️ **`/swagger-ui.html` отдаёт 401 (старый пробел, не регресс).** В `SecurityConfig` movie/theater/screening/booking в `permitAll` стоят `/swagger-ui/**` и `/v3/api-docs/**`, но не `/swagger-ui.html` — без токена этот путь закрыт. Подтверждено вживую: на springdoc 3.0.3 (main) поведение то же. Рабочий вход — `http://localhost:8081/swagger-ui/index.html`. Исправление (добавить `/swagger-ui.html` в `permitAll`) — не сделано, решение за владельцем; auth-service не проверялся.
+**Уборка (17 окт, ветка `chore/housekeeping`) — три пункта закрыты:**
 
-**Побочное наблюдение (не исправлено):** после мержа #3 `microservices-backend/gradlew.bat` в рабочей копии на Windows сразу показывается как изменённый, хотя содержимое отличается только концами строк (`git diff --ignore-space-at-eol` пуст). Предположительно, Dependabot закоммитил файл с CRLF, а `.gitattributes` (`*.bat text eol=crlf`) нормализует его в LF; причина не проверялась. На CI не влияет.
+1. ✅ **`docs/PAYMENT_DESIGN.md` в репозитории** (был неотслеженным; содержимое не менялось, секретов нет).
+2. ✅ **`gradlew.bat`: CRLF в blob'е.** Причина подтверждена: blob из коммита `7a4291c` (initial) был с LF (0 байт CR), а blob из `ac3fbd4` (Dependabot #3) — с CRLF (112 CR на 112 строк). Правило `.gitattributes` (`*.bat text eol=crlf`) требует хранить в индексе LF (CRLF — только в рабочей копии), поэтому файл сразу выглядел изменённым. `git add --renormalize .` затронул **единственный** файл — `gradlew.bat` (тот же 224-строчный дифф, только концы строк; `git diff --cached --ignore-space-at-eol` пуст). `gradlew` остался `100755` (`git ls-files --stage`). ⚠️ **Не проверено:** не повторится ли это на следующем Dependabot-бампе wrapper'а — если бот снова закоммитит `gradlew.bat` с CRLF, нормализацию придётся повторить (проверять дифф каждого такого PR).
+3. ✅ **`/swagger-ui.html` → 401.** В `permitAll` movie/theater/screening/booking добавлен `"/swagger-ui.html"` (больше ничего: `/actuator/**` и прочее остаются закрытыми). Проверено вживую на собранных jar'ах (Postgres/Mongo/Redis в Docker на 5433/6380): без токена `/swagger-ui.html` → **302 → `/swagger-ui/index.html` → 200** на movie, theater, screening, booking. Контроль: `POST` на movie/theater/screening/booking и `/actuator/health` без токена по-прежнему 401. **auth-service:** в нём нет `spring-security` вообще (он выпускает токены, а не проверяет их), поэтому фильтра нет и springdoc открыт по умолчанию — вживую так же 302 → 200; менять нечего. Побочно: из-за отсутствия Security весь HTTP-слой auth-service открыт на уровне фреймворка — это следует из дизайна (все его эндпоинты публичны, защита — OTP/rate limit), но в других сервисах Swagger-путей «закрыть по умолчанию» там нет. Gateway swagger-маршрутов не имеет и не менялся. **Не проверено:** отрисовка Swagger UI в браузере (проверка по HTTP-ответам).
 
 ---
 
