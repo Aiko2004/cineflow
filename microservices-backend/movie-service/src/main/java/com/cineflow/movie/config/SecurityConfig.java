@@ -24,7 +24,7 @@ public class SecurityConfig {
                         // Каталог читают анонимно.
                         .requestMatchers(HttpMethod.GET, "/movies/**").permitAll()
                         // Swagger/OpenAPI оставляем открытыми для удобства разработки.
-                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // Создание фильма — только с токеном.
                         .requestMatchers(HttpMethod.POST, "/movies/**").authenticated()
                         .anyRequest().authenticated())
