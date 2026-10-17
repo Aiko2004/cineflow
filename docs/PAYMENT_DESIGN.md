@@ -1,0 +1,241 @@
+# payment-service и сага покупки — проект
+
+Фаза 4. Оплата брони и согласованность между `booking-service` и `payment-service`.
+Предпосылки — `BOOKING_DESIGN.md §9` (сценарий «оплата пришла после истечения удержания»).
+
+---
+
+## 0. Принятые решения
+
+| Решение | Почему | Отвергнутые альтернативы |
+|---|---|---|
+| Платёжный провайдер за интерфейсом `PaymentGateway`, первая реализация — **симулятор в модели Kaspi** (счёт на номер телефона, оплата асинхронно в «приложении») | Kaspi — реальность казахстанского рынка; асинхронная оплата с непредсказуемой задержкой — ровно тот случай, ради которого нужна сага; симулятор позволяет воспроизвести опоздавшую оплату детерминированно | Stripe test mode — синхронная карта, сценарий опоздания не воспроизводится, недоступен KZ-бизнесу. Настоящий Kaspi API — нужен ИП/договор, публичной песочницы нет |
+| Сага — **оркестрация**, оркестратор — **booking-service** | Он владеет главным состоянием (бронь, места) и уже имеет конечный автомат с условными `UPDATE`; логика процесса в одном месте | Хореография — логика размазана по сервисам, состояние покупки не видно нигде. Отдельный сервис-оркестратор — лишний сервис ради 3–4 шагов |
+| Сага пишется **кодом**, без workflow-движка | Цель — понять механику (состояние, компенсации, идемпотентность, outbox) | Camunda 7 CE — EoL с октября 2025; Camunda 8 — тяжёлая инфраструктура и лицензия на прод; Temporal — возможное упражнение позже, для сравнения |
+| «Выставить счёт» — **синхронно** (Feign), всё остальное — **Kafka** | Пользователю нужен ответ «счёт выставлен» сразу; результат оплаты приходит когда угодно | Всё через Kafka — фронтенду пришлось бы опрашивать статус ещё до появления счёта |
+| `POST /payment/init` реализуется в **booking-service**; gateway маршрутизирует путь туда | Путь из контракта фронтенда сохраняется, а логически это «начать покупку» — работа оркестратора | Реализация в payment-service — тогда платёжный сервис должен знать о местах и сеансах |
+| Сохранённые карты (`createPaymentMethod`/`verifyPaymentMethod`) **не делаем** | В модели Kaspi карты нет — счёт выставляется на телефон | — осознанное отклонение от референс-контракта |
+| События публикуются через **Transactional Outbox** (поллинг таблицы) | Устраняет dual write: изменение состояния и событие пишутся одной локальной транзакцией | Публикация в Kafka прямо из кода — теряет события при падении между коммитом и `send`. Debezium (CDC) — корректнее по задержке, но отдельная инфраструктура (Kafka Connect) |
+
+---
+
+## 1. Сага: шаги и компенсации
+
+| Шаг | Где | Компенсация |
+|---|---|---|
+| 1. Занять места: бронь `PENDING` | booking (локальная транзакция) | Бронь → `CANCELLED`/`EXPIRED`, `released_at` местам |
+| 2. Выставить счёт на телефон | payment → провайдер | Отменить счёт |
+| 3. Получить оплату | провайдер → payment | **Возврат денег** |
+| 4. Подтвердить бронь, выдать QR | booking | — (финальный шаг) |
+
+Компенсация — не откат. Списанные деньги не «отменяются», делается новое действие — возврат. Сага даёт согласованность в конечном счёте, а не атомарность: система бывает «в процессе», но приходит в правильное состояние.
+
+---
+
+## 2. Основной поток
+
+```
+Пользователь      booking-service (оркестратор)        payment-service          Провайдер (симулятор)
+  │ POST /payment/init   │                                  │                          │
+  │─────────────────────▶│ TX1: бронь PENDING, места заняты │                          │
+  │                      │      (уникальный индекс)         │                          │
+  │                      │── Feign: создать счёт ──────────▶│ TX: payment PENDING      │
+  │                      │   (ключ идемпотентности=bookingId)── счёт на телефон ──────▶│
+  │                      │◀────── { paymentId, expiresAt } ─│                          │
+  │                      │ TX2: booking.payment_id = …      │                          │
+  │◀── 201 «оплатите в Kaspi до …»                           │                          │
+  │                                                          │                          │
+  │            … пользователь платит в «приложении» через N минут …                    │
+  │                                                          │◀── webhook PAID (HMAC) ──│
+  │                                                          │ TX: payment PAID         │
+  │                                                          │     + outbox: PaymentSucceeded
+  │                                                          │── relay → Kafka ──┐      │
+  │                      │◀──────── payment.events ──────────────────────────────┘      │
+  │                      │ TX: UPDATE … SET CONFIRMED WHERE status='PENDING'           │
+  │                      │     QR = SecureRandom                                        │
+```
+
+### Ключевой инвариант подтверждения
+
+**Бронь в статусе `PENDING` ⇒ её места активны** (`released_at IS NULL`), и никто другой их не занял — это держит частичный уникальный индекс.
+
+Отсюда правило: `PaymentSucceeded` подтверждает бронь **тогда и только тогда, когда условный `UPDATE … WHERE status = 'PENDING'` затронул строку** — независимо от того, прошёл ли уже `hold_expires_at` по часам. Если удержание формально истекло, но уборщик ещё не перевёл бронь в `EXPIRED`, места всё ещё наши — подтверждаем, а не возвращаем деньги.
+
+⚠️ Инвариант нужно **проверить в коде**, а не принять на веру: любой путь, освобождающий места (уборщик, освобождение просроченных удержаний перед вставкой, отмена), обязан в **той же транзакции** перевести бронь из `PENDING`. Если где-то места освобождаются без смены статуса — правило подтверждения становится некорректным.
+
+---
+
+## 3. Сценарии сбоев
+
+Каждый сценарий — отдельный интеграционный тест (Testcontainers: Postgres + Kafka).
+
+| # | Ситуация | Механизм | Исход |
+|---|---|---|---|
+| 1 | Оплатил вовремя | `PaymentSucceeded` → условный `UPDATE` в `CONFIRMED` | Бронь `CONFIRMED`, QR |
+| 2 | Не оплатил, счёт истёк | Провайдер/сверка → `PaymentFailed(EXPIRED)` → бронь `EXPIRED`, места освобождены | Места свободны |
+| 3 | **Оплатил после того, как бронь ушла в `EXPIRED`/`CANCELLED`** | `UPDATE` затронул 0 строк, бронь не `CONFIRMED` → booking пишет в outbox команду `RefundPayment` | Деньги возвращены, `RefundCompleted` |
+| 4 | payment-service недоступен на `/payment/init` | Feign падает (под CB/retry) → TX: бронь `CANCELLED`, места освобождены | Пользователь видит ошибку, места свободны |
+| 4a | Feign получил таймаут, но счёт **на самом деле создан** | Бронь отменена → если оплата всё же придёт, это сценарий 3 | Возврат |
+| 4b | booking упал между TX1 и вызовом payment | Бронь `PENDING` без `payment_id` → уборщик переведёт в `EXPIRED` по `hold_expires_at` | Места освобождены |
+| 5 | Webhook об оплате пришёл дважды | Условный `UPDATE payments … WHERE status='PENDING'`: второй затронет 0 строк, событие не создаётся | Обработано один раз |
+| 6 | booking упал посреди обработки события | Offset не закоммичен → Kafka доставит снова → условный `UPDATE` идемпотентен | Без двойного эффекта |
+| 7 | Пользователь отменил, а оплата пришла одновременно | Отмена и подтверждение — оба условные `UPDATE` по `status='PENDING'`, выигрывает один. Проиграло подтверждение → сценарий 3 | Либо `CONFIRMED`, либо `CANCELLED` + возврат. Никогда «отменено и деньги списаны» |
+
+Срок жизни счёта (`invoice_ttl`) **короче** удержания брони (`hold`): например 8 и 10 минут. Это снижает частоту сценария 3, но не устраняет его (оплата в последнюю секунду + задержка доставки), поэтому ветка возврата обязательна.
+
+---
+
+## 4. Данные
+
+### booking-service — миграция V2 (только expand)
+
+```sql
+ALTER TABLE bookings ADD COLUMN payment_id UUID;            -- NULL до ответа payment-service
+ALTER TABLE bookings ADD COLUMN refund_requested_at TIMESTAMPTZ;  -- аудит: когда отправлена команда возврата
+
+CREATE TABLE outbox ( … см. ниже … );
+```
+
+Статусы брони **не меняются** — сага укладывается в существующий автомат `PENDING → CONFIRMED | CANCELLED | EXPIRED`. Состояние «ждём оплату» = `PENDING` с заполненным `payment_id`.
+
+### payment-service — своя БД `payment`
+
+```sql
+CREATE TABLE payments (
+    id                  UUID          PRIMARY KEY,
+    booking_id          UUID          NOT NULL,
+    user_id             UUID          NOT NULL,
+    amount              NUMERIC(10,2) NOT NULL,
+    currency            VARCHAR(3)    NOT NULL,         -- KZT
+    phone               VARCHAR(20)   NOT NULL,         -- куда выставлен счёт
+    status              VARCHAR(20)   NOT NULL,         -- см. автомат ниже
+    provider_invoice_id VARCHAR(64),
+    expires_at          TIMESTAMPTZ   NOT NULL,
+    paid_at             TIMESTAMPTZ,
+    refunded_at         TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ   NOT NULL,
+    updated_at          TIMESTAMPTZ   NOT NULL,
+    -- идемпотентность создания счёта: повтор с тем же bookingId вернёт тот же платёж
+    CONSTRAINT uk_payments_booking UNIQUE (booking_id)
+);
+CREATE UNIQUE INDEX uk_payments_provider_invoice ON payments (provider_invoice_id);
+```
+
+Автомат платежа (переходы — условными `UPDATE`, правила — в enum, как у `BookingStatus`):
+
+```
+PENDING ──webhook PAID──▶ PAID ──RefundPayment──▶ REFUND_PENDING ──провайдер ок──▶ REFUNDED
+   │
+   ├──истёк/отклонён──▶ FAILED
+   └──CancelInvoice───▶ CANCELLED
+```
+
+### Outbox (одинаковая таблица в обоих сервисах)
+
+```sql
+CREATE TABLE outbox (
+    id             UUID         PRIMARY KEY,   -- он же eventId в сообщении
+    aggregate_id   UUID         NOT NULL,      -- bookingId → ключ сообщения Kafka
+    topic          VARCHAR(100) NOT NULL,
+    event_type     VARCHAR(100) NOT NULL,
+    payload        JSONB        NOT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL,
+    published_at   TIMESTAMPTZ                 -- NULL = ещё не опубликовано
+);
+CREATE INDEX idx_outbox_unpublished ON outbox (created_at) WHERE published_at IS NULL;
+```
+
+**Relay** (`@Scheduled`, раз в ~1 с): выбрать пачку неопубликованных `ORDER BY created_at … FOR UPDATE SKIP LOCKED`, отправить в Kafka **с ожиданием подтверждения брокера**, проставить `published_at`. Падение после отправки, но до коммита → сообщение уйдёт повторно. Это ожидаемо и закрывается идемпотентностью потребителей.
+
+`SKIP LOCKED` — задел на несколько экземпляров сервиса: два relay не возьмут одни и те же строки.
+
+Почему код outbox дублируется в двух сервисах, а не выносится в `contracts`: `contracts` — только то, что пересекает границу (DTO событий, enum'ы). Общая утилита с `@Component` превратила бы его в общую библиотеку логики — путь к распределённому монолиту. Кода немного.
+
+---
+
+## 5. Kafka
+
+Появляется в проекте впервые. Один брокер в режиме KRaft (без ZooKeeper) в `docker-compose.yml`.
+
+| Топик | Производитель → потребитель | Ключ | События / команды |
+|---|---|---|---|
+| `payment.events` | payment → booking | `bookingId` | `PaymentSucceeded`, `PaymentFailed{reason: EXPIRED/DECLINED/CANCELLED}`, `RefundCompleted` |
+| `payment.commands` | booking → payment | `bookingId` | `RefundPayment`, `CancelInvoice` |
+
+- **Ключ = `bookingId`**: все сообщения одной покупки попадают в одну партицию и обрабатываются по порядку.
+- **Доставка at-least-once**: offset коммитится **после** успешной обработки. Повторы ожидаемы, обработчики идемпотентны за счёт условных `UPDATE`.
+- **Ядовитые сообщения**: после N повторов — в dead-letter topic (`<topic>.DLT`), чтобы одно битое сообщение не блокировало партицию. Конкретная настройка в Spring Kafka — проверить вживую.
+- DTO событий и команд — в `contracts` (пересекают границу). Конверт: `eventId`, `type`, `occurredAt`, `bookingId`, `paymentId` + поля события. Деньги — строкой (как в gRPC). Enum `reason` — с `UNKNOWN` + `@JsonEnumDefaultValue` по правилам эволюции контрактов.
+
+`booking.events` (для уведомлений, Фаза 6) **не заводим сейчас** — у него нет потребителя.
+
+---
+
+## 6. Провайдер: интерфейс и симулятор
+
+```java
+interface PaymentGateway {
+    Invoice createInvoice(UUID paymentId, String phone, BigDecimal amount, Instant expiresAt); // идемпотентно по paymentId
+    void cancelInvoice(String providerInvoiceId);
+    void refund(String providerInvoiceId, UUID idempotencyKey);                               // идемпотентно
+    InvoiceStatus getInvoiceStatus(String providerInvoiceId);                                  // для сверки
+}
+```
+
+**Симулятор Kaspi** — реализация внутри payment-service (отдельный пакет, включается профилем). Хранит счета у себя и снаружи общается **только** через этот интерфейс и HTTP-webhook — так путь обработки webhook настоящий.
+
+Dev-эндпоинты симулятора («приложение Kaspi»):
+
+```
+POST /payment/sim/invoices/{providerInvoiceId}/pay?delaySeconds=0   — «оплатить в приложении»
+POST /payment/sim/invoices/{providerInvoiceId}/decline              — отказ
+```
+
+Через `delaySeconds` воспроизводится сценарий 3: счёт оплачивается позже истечения брони.
+
+**Webhook** `POST /payment/webhooks/kaspi`:
+- публичный (без JWT), но с подписью: заголовок с HMAC-SHA256 тела общим секретом, сравнение за константное время. Неверная подпись → 401;
+- идемпотентен: условный переход `PENDING → PAID` по `provider_invoice_id`;
+- быстро отвечает 200 — тяжёлая работа уходит в outbox.
+
+**Сверка (reconciliation)**: webhook может не дойти никогда. Фоновая задача берёт платежи `PENDING` с `expires_at` в прошлом и спрашивает статус у провайдера через `getInvoiceStatus`. Так делают реальные платёжные интеграции — webhook не единственный источник правды.
+
+**Возврат**: команда `RefundPayment` → условно `PAID → REFUND_PENDING` (коммит) → вызов `refund` **вне транзакции** → `REFUNDED` + outbox `RefundCompleted`. Если провайдер недоступен — платёж остаётся `REFUND_PENDING`, фоновая задача повторяет. Ключ идемпотентности возврата = `paymentId`: повтор не вернёт деньги дважды.
+
+---
+
+## 7. Эндпоинты и маршрутизация
+
+```
+booking-service:
+POST /payment/init          { screeningId, seats[], phone }   → 201 { bookingId, paymentId, amount, invoiceExpiresAt }
+                            заголовок Idempotency-Key
+POST /bookings/{id}/cancel  — PENDING: отмена + CancelInvoice; CONFIRMED: см. открытые вопросы
+
+payment-service (8086):
+POST /payment/webhooks/kaspi        — публичный, HMAC
+POST /payment/sim/invoices/{id}/…   — только в dev-профиле
+GET  /payment/{id}                  — статус платежа (владелец из sub)
+```
+
+- `phone` — **отклонение от контракта** фронтенда: Kaspi выставляет счёт на телефон, а Users Service ещё нет. Когда появится — брать из профиля. Форму ответа `/payment/init` сверить с `InitPaymentResponse` в референсе (`frontend/src/api/generated/`) и задокументировать расхождения.
+- Gateway: `/payment/init` → booking-service, остальные `/payment/**` → payment-service. Порядок маршрутов (специфичный раньше общего) — проверить вживую.
+- **Заглушка `POST /bookings/{id}/confirm` закрывается.** Сейчас любой пользователь может подтвердить бронь без оплаты. Подтверждение остаётся только внутренним действием обработчика `PaymentSucceeded`. `POST /bookings` без оплаты — тоже убрать из публичного API: вход в покупку один, `/payment/init`.
+
+---
+
+## 8. Инкременты реализации
+
+1. **Инфраструктура и контракты**: Kafka в compose; DTO событий/команд в `contracts`; payment-service (скелет, Flyway, security, Eureka, gateway-маршруты); outbox + relay в payment.
+2. **Платёж**: `PaymentGateway`, симулятор, webhook с HMAC, автомат платежа, сверка, возврат.
+3. **Оркестрация в booking**: `/payment/init`, V2-миграция, outbox + relay, потребитель `payment.events`, команды `RefundPayment`/`CancelInvoice`; закрыть `confirm`-заглушку; проверка инварианта из §2.
+4. **Тесты сценариев 1–7** + сквозной ручной прогон через gateway и симулятор.
+
+---
+
+## 9. Открытые вопросы
+
+- **Отмена `CONFIRMED`-брони до начала сеанса → возврат.** Механизм (команда `RefundPayment`) уже есть; решить продуктовые правила — до какого момента можно, полный ли возврат.
+- Числа: `invoice_ttl` 8 мин, `hold` 10 мин, период сверки и relay — из здравого смысла, не из данных.
+- DLT: что делать с сообщением в dead-letter — пока только лог и ручной разбор.
+- Частичные возвраты (вернуть одно место из трёх) — не поддерживаем.
