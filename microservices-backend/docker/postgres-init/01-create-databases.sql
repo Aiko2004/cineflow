@@ -7,3 +7,4 @@ SELECT 'CREATE DATABASE movies'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE
 SELECT 'CREATE DATABASE theater' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'theater')\gexec
 SELECT 'CREATE DATABASE auth'    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'auth')\gexec
 SELECT 'CREATE DATABASE booking' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'booking')\gexec
+SELECT 'CREATE DATABASE payment' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'payment')\gexec
