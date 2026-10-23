@@ -8,7 +8,7 @@ include(
     "screening-service",
     "auth-service",
     "booking-service",
-//    "payment-service",
+    "payment-service",
 //    "users-service",
 //    "notification-service",
     "contracts"

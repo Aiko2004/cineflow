@@ -39,6 +39,15 @@ spring:
               uri: lb://booking-service
               predicates:
                 - Path=/bookings/**
+            # Только /payment/**. Пути /internal/** здесь НЕТ намеренно: внутренние эндпоинты
+            # payment-service (выставление счёта, сумму присылает вызывающий сервис) не должны
+            # быть достижимы снаружи — без маршрута gateway отдаёт на них 404 (PAYMENT_DESIGN.md §7).
+            # Позже /payment/init будет вынесен выше в маршрут booking-service (специфичный
+            # путь раньше общего).
+            - id: payment-service
+              uri: lb://payment-service
+              predicates:
+                - Path=/payment/**
   security:
     oauth2:
       resourceserver:

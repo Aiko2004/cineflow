@@ -19,12 +19,15 @@ endif
 ifdef REDIS_HOST_PORT
 REDIS_PORT ?= $(REDIS_HOST_PORT)
 endif
+ifdef KAFKA_HOST_PORT
+KAFKA_BOOTSTRAP_SERVERS ?= localhost:$(KAFKA_HOST_PORT)
+endif
 
 GRADLE  := ./gradlew
 COMPOSE := docker compose
 
 SERVICES := eureka-server api-gateway movie-service theater-service \
-            screening-service auth-service booking-service
+            screening-service auth-service booking-service payment-service
 
 .DEFAULT_GOAL := help
 .PHONY: help infra-up infra-down infra-reset infra-ps infra-logs \
@@ -38,7 +41,7 @@ help: ## Список команд
 
 # ---------- Инфраструктура ----------
 
-infra-up: ## Поднять Postgres, Mongo, Redis (+ создание БД)
+infra-up: ## Поднять Postgres, Mongo, Redis, Kafka + Kafka UI (+ создание БД)
 	$(COMPOSE) up -d
 
 infra-down: ## Остановить контейнеры (данные сохраняются)

@@ -43,8 +43,11 @@ CineFlow/                      корень git-репозитория
     ├── theater-service/       8082, Postgres
     ├── screening-service/     8083, MongoDB (+ gRPC-сервер 9083)
     ├── auth-service/          8084, Postgres + Redis
-    └── booking-service/       8085, Postgres + Redis
+    ├── booking-service/       8085, Postgres + Redis
+    └── payment-service/       8086, Postgres + Kafka (outbox → payment.events)
 ```
+
+Инфраструктура в `docker-compose.yml` кроме баз: **Kafka** (брокер KRaft, host-порт 9092) и **Kafka UI** (http://localhost:8090).
 
 Frontend (Angular) пока не начат.
 
@@ -67,7 +70,7 @@ PostgreSQL, MongoDB, Redis, Kafka, RabbitMQ, Keycloak, ClickHouse, S3.
 
 **Сервисы.** `@RequiredArgsConstructor` + `final` поля (конструкторная инъекция, не `@Autowired` на поле). Маппинг entity↔DTO — приватными методами в сервисе.
 
-**Конфиги.** Только плейсхолдеры `${VAR:default}`, никакого хардкода credentials. Секреты в `.env` (в `.gitignore`), `.env.example` — в репозитории. Переменные окружения, специфичные для конкретного сервиса, имеют префикс сервиса: `MOVIE_*`, `AUTH_*`, `BOOKING_*`, `THEATER_*` — потому что корневой `.env` экспортируется Makefile'ом во все сервисы сразу, и одно имя `DB_NAME` означало бы разные значения для разных сервисов.
+**Конфиги.** Только плейсхолдеры `${VAR:default}`, никакого хардкода credentials. Секреты в `.env` (в `.gitignore`), `.env.example` — в репозитории. Переменные окружения, специфичные для конкретного сервиса, имеют префикс сервиса: `MOVIE_*`, `AUTH_*`, `BOOKING_*`, `THEATER_*`, `PAYMENT_*` — потому что корневой `.env` экспортируется Makefile'ом во все сервисы сразу, и одно имя `DB_NAME` означало бы разные значения для разных сервисов.
 
 **Миграции БД.** Только Flyway, `ddl-auto: validate`. Никогда не `update`.
 
@@ -125,7 +128,7 @@ cd microservices-backend
 
 ./gradlew build                      # сборка всех модулей
 ./gradlew :movie-service:bootRun     # запуск одного сервиса
-docker compose up -d                 # инфраструктура (Postgres, MongoDB, Redis)
+docker compose up -d                 # инфраструктура (Postgres, MongoDB, Redis, Kafka + Kafka UI)
 ```
 
 Порядок запуска: `eureka-server` → остальные сервисы → проверка на http://localhost:8761
@@ -215,3 +218,38 @@ docker compose up -d                 # инфраструктура (Postgres, M
 - **Доступность места учитывает `hold_expires_at`**, не только существование записи: перед вставкой освобождаются просроченные удержания этого сеанса; фоновый уборщик переводит просроченные PENDING в EXPIRED.
 - **QR при подтверждении — случайный токен из `SecureRandom`**, не производная от `bookingId`.
 - **App-assigned UUID + JPA:** сущность с присвоенным id и коллекцией должна реализовать `Persistable` (`isNew()`), иначе `repository.save()` уходит в `merge()` и ломает каскад (`ObjectNotFoundException`). См. `Booking`.
+
+## Kafka и payment-service (Фаза 4)
+
+Полная схема — `docs/PAYMENT_DESIGN.md`. Порт 8086, Postgres (`payment`: платежи, outbox, таблица симулятора) + Kafka. Сделаны инкременты 1–2a (выставление счёта, outbox + relay); webhook, возвраты, потребитель команд и оркестрация в booking — позже, см. `CURRENT_STATE.md`.
+
+**Инфраструктура (всё проверено вживую).** `apache/kafka:4.3.1` (тег закреплён; последний GA, остальные в списке тегов — RC), один брокер KRaft. Имена env-переменных образа — `KAFKA_*` (`KAFKA_PROCESS_ROLES`, `KAFKA_LISTENERS`, `KAFKA_ADVERTISED_LISTENERS`, `KAFKA_CONTROLLER_QUORUM_VOTERS`, `KAFKA_AUTO_CREATE_TOPICS_ENABLE` и т.д.). Ловушки, найденные запуском:
+- **Advertised listener обязан совпадать с host-портом** (`KAFKA_HOST_PORT`): брокер при подключении возвращает клиенту advertised-адрес. Проверено: при `KAFKA_HOST_PORT=9094` клиент с хоста подключается на 9094, на 9092 — нет.
+- **`KAFKA_LOG_DIRS=/var/lib/kafka/data` обязателен**, иначе брокер пишет в `/tmp` контейнера, а именованный том остаётся пустым — топики теряются при пересоздании контейнера.
+- В Git Bash команды `docker exec … /opt/kafka/bin/…` ломаются конвертацией путей — `MSYS_NO_PATHCONV=1`.
+- Автосоздание топиков выключено (проверено: продюсер в несуществующий топик получает `UnknownTopicOrPartition`, топик не появляется). Kafka UI — `kafbat/kafka-ui:v1.5.0`, кластер задаётся `KAFKA_CLUSTERS_0_NAME` / `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:19092`.
+- Сервисам на хосте нужен `KAFKA_BOOTSTRAP_SERVERS` (дефолт `localhost:9092`; Makefile выводит его из `KAFKA_HOST_PORT`).
+
+**Топики** (имена — `PaymentTopics` в `contracts`; создаёт `payment-service` через `NewTopic`-бины при старте, по 3 партиции):
+
+| Топик | Направление | Ключ | Содержимое |
+|---|---|---|---|
+| `payment.events` | payment → booking | `bookingId` | `PaymentSucceeded`, `PaymentFailed{reason}`, `RefundCompleted` |
+| `payment.commands` | booking → payment | `bookingId` | `RefundPayment`, `CancelInvoice` |
+| `*.DLT` | dead-letter | — | у DLT столько же партиций, сколько у исходного: `DeadLetterPublishingRecoverer` по умолчанию пишет в ту же партицию |
+
+Топики создаются только при старте payment-service: если Kafka на старте недоступна, они не появятся до рестарта. Сервис при этом стартует (fail-fast выключен), но **медленно: ~52 с вместо ~9** (KafkaAdmin ждёт брокера около 35 с) — замерено.
+
+**Контракт сообщений** (`contracts/.../payment`): записи с общим конвертом `eventId, occurredAt, bookingId, paymentId`. **Тип сообщения — поле `type` в ТЕЛЕ JSON** с логическим именем (`"PaymentSucceeded"`), его пишет и читает Jackson по `@JsonTypeInfo`/`@JsonSubTypes` на `PaymentEvent`/`PaymentCommand`. Заголовок `__TypeId__` (полное имя Java-класса) не используется вовсе: он связывал бы сервисы именами пакетов, а сообщение, положенное руками в Kafka UI, не читалось бы. Деньги — строкой. `@JsonIgnoreProperties(ignoreUnknown)` на уровне контракта; незнакомый `type` — ошибка десериализации (в DLT), а не молчаливый пропуск; незнакомое значение enum → `UNKNOWN`.
+
+**Сериализаторы Spring Kafka 4.1.1** (проверено чтением jar): актуальные — `JacksonJsonSerializer`/`JacksonJsonDeserializer` (Jackson 3, `tools.jackson`); `JsonSerializer`/`JsonDeserializer` — на Jackson 2 и помечены `@Deprecated(forRemoval = true)`, не использовать. Продюсер payment-service их не использует: в outbox лежит готовый JSON, он уходит `StringSerializer`'ом (ничего не сериализуется второй раз, заголовков типа нет — проверено, `NO_HEADERS`). Для потребителя JSON-класс — `ErrorHandlingDeserializer` поверх `JacksonJsonDeserializer` (ещё не реализовано, будет в следующем PR; не проверено вживую).
+
+**Продюсер.** Дефолты `kafka-clients` 4.2.1 (проверено чтением `ProducerConfig`): `acks=all`, `enable.idempotence=true`, `max.in.flight=5`, `delivery.timeout.ms=120000`, `max.block.ms=60000`. В `application.yaml` `acks` и `enable.idempotence` всё равно заданы явно. Идемпотентность продюсера — только про внутренние ретраи клиента, **не** защита от повторной отправки relay'ем после падения до `UPDATE published_at`: для брокера это новый `send`. Такие дубли гасит идемпотентность потребителя по `eventId`.
+
+**Transactional outbox.** Запись события — в той же транзакции, что и смена статуса (`OutboxWriter` — `Propagation.MANDATORY`: вызов вне транзакции падает сразу). Relay (`@Scheduled`, 1 с): пачка `ORDER BY created_at, id FOR UPDATE SKIP LOCKED`, отправка по одному сообщению с ожиданием подтверждения, при первой ошибке пачка прерывается (следующий тик начнёт с неотправленного — не обгоняем сообщение того же ключа), подтверждённые до ошибки помечаются `published_at`. Доставка **at-least-once**. Таймауты продюсера (`delivery.timeout.ms` + `max.block.ms`) заданы короче `cineflow.payment.outbox.send-timeout`: к моменту, когда relay сдаётся, продюсер уже отказался от сообщения и не «дошлёт» его позже. ⚠️ При **нескольких** экземплярах relay `SKIP LOCKED` не гарантирует порядок внутри ключа — пока экземпляр один.
+
+**Внутренний эндпоинт.** `POST /internal/payments` (выставить счёт) вызывает booking, не пользователь; gateway путь `/internal/**` **не маршрутизирует** (только `/payment/**`) — проверено: через gateway 404. `amount` приходит от вызывающего, поэтому эндпоинт нельзя открывать наружу. Ограничения — в `PAYMENT_DESIGN.md §7`.
+
+**Платёжный провайдер** — `PaymentGateway` (интерфейс), реализация `KaspiSimulatorGateway` в профиле `kaspi-sim`. Профиль включён через `spring.profiles.default` (проверено: «No active profile set, falling back to 1 default profile: kaspi-sim»); явно активированный другой профиль без `kaspi-sim` оставит сервис без бина `PaymentGateway` — он не стартует. Внешний вызов провайдера — вне транзакции БД; намерение (платёж `PENDING`) фиксируется ДО вызова провайдера.
+
+**Тесты.** Testcontainers 2.x: Kafka — `org.testcontainers.kafka.KafkaContainer("apache/kafka:4.3.1")` (модуль `testcontainers-kafka`; `org.testcontainers.containers.KafkaContainer` — старый, под Confluent-образ). Postgres — `org.testcontainers.postgresql.PostgreSQLContainer` (негенерик): `org.testcontainers.containers.PostgreSQLContainer` в 2.0.5 помечен `@Deprecated` (в тестах booking/auth/movie он ещё используется). Недоступность брокера в тесте — `docker pause` контейнера (порт на хосте не меняется, в отличие от stop/start).
