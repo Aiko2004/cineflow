@@ -2,6 +2,7 @@ package com.cineflow.payment.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
@@ -9,8 +10,12 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtGra
 import org.springframework.security.web.SecurityFilterChain;
 
 // Защита ресурсного сервиса по образцу movie/booking (AUTH_DESIGN.md §8).
-// Публичных чтений нет: платёж — личные данные. Webhook провайдера (публичный, но с HMAC-
-// подписью) добавляется вместе с обработчиком.
+// Публичных чтений нет: платёж — личные данные. Единственный публичный путь — webhook
+// провайдера: токена у провайдера нет, подлинность доказывает HMAC-подпись тела.
+//
+// Dev-эндпоинты симулятора (/payment/sim/**, профиль kaspi-sim) НЕ открыты: «приложение
+// Kaspi» требует токен любого пользователя — так они не становятся анонимной кнопкой
+// «оплатить чужой счёт» даже в dev.
 //
 // /internal/** требует токен пользователя (из него берётся user_id), но это НЕ защита
 // границы доверия: эндпоинт защищён тем, что gateway его не маршрутизирует (PAYMENT_DESIGN.md §7).
@@ -25,6 +30,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // Swagger/OpenAPI открыты для удобства разработки.
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // Ровно один путь и один метод — не /payment/webhooks/**.
+                        .requestMatchers(HttpMethod.POST, "/payment/webhooks/kaspi").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->
                         jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));

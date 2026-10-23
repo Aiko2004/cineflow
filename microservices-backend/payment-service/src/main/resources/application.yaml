@@ -53,7 +53,8 @@ spring:
       #  idempotence: брокер отбрасывает дубль, возникший из-за внутреннего retry продюсера
       #            (ответ потерялся — продюсер повторил). Это НЕ защита от повторной отправки
       #            relay'ем после падения до UPDATE published_at: для брокера это новый send.
-      #            Такие дубли гасит идемпотентность потребителя по eventId.
+      #            Такие дубли гасит идемпотентность обработчика у потребителя (условный UPDATE
+      #            по ожидаемому статусу на повторе затрагивает 0 строк), а не таблица eventId.
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       # Значение — String: в outbox уже лежит готовый JSON. Сериализовать второй раз незачем,
@@ -69,6 +70,23 @@ spring:
         delivery.timeout.ms: 15000
         request.timeout.ms: 5000
         max.block.ms: 5000
+    consumer:
+      # Группа потребителя payment.commands. Экземпляры одной группы делят партиции между собой.
+      group-id: payment-service
+      # Группа впервые подключается, а в топике уже лежат команды (booking отправил их, пока
+      # payment-service ещё не запускался): earliest — прочитать их; latest — молча пропустить.
+      auto-offset-reset: earliest
+      # Значение — String, JSON разбирается в листенере (почему — PaymentCommandListener).
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Offset коммитит контейнер Spring Kafka по ack-mode, а не фоновый автокоммит клиента:
+      # автокоммит мог бы зафиксировать offset ещё не обработанного сообщения.
+      enable-auto-commit: false
+    listener:
+      # Коммит offset после КАЖДОГО успешно обработанного сообщения. Дефолт BATCH коммитит после
+      # всей пачки poll() — при падении посреди пачки повторно пришли бы и уже обработанные.
+      # Повторы безвредны (обработчики идемпотентны), RECORD лишь уменьшает их число.
+      ack-mode: record
 
 eureka:
   client:
@@ -87,3 +105,22 @@ cineflow:
       interval: 1000        # мс между тиками relay (fixedDelay: тик не стартует, пока идёт прошлый)
       batch-size: 50
       send-timeout: 25s     # = max.block.ms + delivery.timeout.ms + запас 5 с
+    kaspi:
+      # Общий с провайдером секрет подписи webhook. Дефолт — только для dev: в любом общем
+      # окружении задаётся через PAYMENT_KASPI_WEBHOOK_SECRET.
+      webhook-secret: ${PAYMENT_KASPI_WEBHOOK_SECRET:dev-only-kaspi-webhook-secret}
+      simulator:
+        # Куда симулятор шлёт webhook. По умолчанию — прямо в этот же сервис; через gateway
+        # (http://localhost:8080/payment/webhooks/kaspi) путь тоже открыт.
+        webhook-url: ${PAYMENT_SIM_WEBHOOK_URL:http://localhost:${server.port}/payment/webhooks/kaspi}
+    # Фоновые задачи. Рассчитаны на ОДИН экземпляр сервиса, как и relay (PAYMENT_DESIGN.md §4).
+    jobs:
+      reconciliation-interval: 30000   # мс; сверка PENDING с истёкшим счётом
+      refund-retry-interval: 30000     # мс; повтор возвратов, застрявших в REFUND_PENDING
+      batch-size: 50
+      refund-retry-min-age: 30s
+    commands:
+      # Потребитель payment.commands: 3 повтора через 1 с, затем .DLT. Ошибки разбора и
+      # «платёж не найден» уходят в .DLT сразу (KafkaConsumerConfig).
+      max-retries: 3
+      retry-backoff: 1s

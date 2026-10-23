@@ -23,6 +23,12 @@ import java.util.UUID;
 // через интерфейс PaymentGateway.
 //
 // Таблица — через JdbcClient, не JPA: это не доменная сущность, а имитация чужого хранилища.
+//
+// Статусы счёта в sim_invoices: PENDING, PAID, DECLINED, CANCELLED, REFUNDED (последний
+// добавлен с возвратами; в комментарии V2 его нет — применённую миграцию не правим, CHECK-
+// ограничения на колонке нет). EXPIRED не хранится, а выводится из expires_at.
+//
+// Сторона «пользователь платит в приложении» и отправка webhook — KaspiSimulatorApp.
 @Component
 @Profile("kaspi-sim")
 @RequiredArgsConstructor
@@ -83,5 +89,60 @@ public class KaspiSimulatorGateway implements PaymentGateway {
         } catch (DataAccessException e) {
             throw new PaymentProviderException("Kaspi simulator is unavailable", e);
         }
+    }
+
+    // Отменить можно только PENDING, срок которого не вышел. Всё остальное — не ошибка:
+    // отменённый/отклонённый/истёкший счёт и так нельзя оплатить (true), оплаченный — нельзя
+    // отменить (false, см. контракт PaymentGateway).
+    @Override
+    @Transactional
+    public boolean cancelInvoice(String providerInvoiceId) {
+        try {
+            int cancelled = jdbc.sql("""
+                            UPDATE sim_invoices SET status = 'CANCELLED', updated_at = :now
+                             WHERE provider_invoice_id = :id AND status = 'PENDING' AND expires_at > :now
+                            """)
+                    .param("id", providerInvoiceId)
+                    .param("now", OffsetDateTime.now())
+                    .update();
+            if (cancelled == 1) {
+                return true;
+            }
+            String status = storedStatus(providerInvoiceId);
+            return !("PAID".equals(status) || "REFUNDED".equals(status));
+        } catch (DataAccessException e) {
+            throw new PaymentProviderException("Kaspi simulator is unavailable", e);
+        }
+    }
+
+    // Только полный возврат: PAID → REFUNDED. Идемпотентность симулятора — по статусу счёта
+    // (повторный возврат уже возвращённого счёта — успех без второго движения денег). Настоящий
+    // провайдер хранил бы idempotencyKey и отвечал на повтор с тем же ключом сохранённым
+    // результатом; симулятору с полными возвратами это не нужно — ключ принимается ради контракта.
+    @Override
+    @Transactional
+    public void refund(String providerInvoiceId, UUID idempotencyKey) {
+        try {
+            int refunded = jdbc.sql("""
+                            UPDATE sim_invoices SET status = 'REFUNDED', updated_at = :now
+                             WHERE provider_invoice_id = :id AND status = 'PAID'
+                            """)
+                    .param("id", providerInvoiceId)
+                    .param("now", OffsetDateTime.now())
+                    .update();
+            if (refunded == 0 && !"REFUNDED".equals(storedStatus(providerInvoiceId))) {
+                throw new PaymentProviderException("Invoice " + providerInvoiceId + " is not paid", null);
+            }
+        } catch (DataAccessException e) {
+            throw new PaymentProviderException("Kaspi simulator is unavailable", e);
+        }
+    }
+
+    private String storedStatus(String providerInvoiceId) {
+        return jdbc.sql("SELECT status FROM sim_invoices WHERE provider_invoice_id = :id")
+                .param("id", providerInvoiceId)
+                .query(String.class)
+                .optional()
+                .orElseThrow(() -> new PaymentProviderException("Unknown invoice " + providerInvoiceId, null));
     }
 }

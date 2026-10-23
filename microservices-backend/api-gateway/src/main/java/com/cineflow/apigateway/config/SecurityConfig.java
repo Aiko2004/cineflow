@@ -30,6 +30,9 @@ public class SecurityConfig {
                                 "/movies/**",
                                 "/api/theaters/**", "/api/halls/**", "/api/seats/**",
                                 "/api/screenings/**").permitAll()
+                        // Публично: webhook платёжного провайдера. Токена у провайдера нет —
+                        // подлинность проверяет payment-service по HMAC-подписи тела.
+                        .requestMatchers(HttpMethod.POST, "/payment/webhooks/kaspi").permitAll()
                         // Всё остальное (в т.ч. любые POST/PUT/DELETE) — только с токеном.
                         .anyRequest().authenticated())
                 // jwk-set-uri берётся из spring.security.oauth2.resourceserver.jwt.

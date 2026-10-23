@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,6 +21,29 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     Optional<Payment> findByIdAndUserId(UUID id, UUID userId);
 
     Optional<Payment> findByProviderInvoiceId(String providerInvoiceId);
+
+    // Сверка: PENDING, у которых истёк срок счёта, — webhook так и не пришёл.
+    // Native-запрос со статусом ЛИТЕРАЛОМ, а не параметром: частичный индекс
+    // idx_payments_pending_expires (V3) применим, только если планировщик видит в запросе то
+    // же условие status = 'PENDING'. С параметром (:status) при generic-плане prepared
+    // statement Postgres этого доказать не может и сканирует таблицу.
+    @Query(value = """
+            SELECT * FROM payments
+             WHERE status = 'PENDING' AND expires_at < :now
+             ORDER BY expires_at
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<Payment> findExpiredPending(@Param("now") OffsetDateTime now, @Param("limit") int limit);
+
+    // Повтор возвратов: REFUND_PENDING, не менявшиеся с :before (литерал статуса — по той же
+    // причине, индекс idx_payments_refund_pending).
+    @Query(value = """
+            SELECT * FROM payments
+             WHERE status = 'REFUND_PENDING' AND updated_at < :before
+             ORDER BY updated_at
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<Payment> findStaleRefundPending(@Param("before") OffsetDateTime before, @Param("limit") int limit);
 
     // Привязка счёта провайдера к платежу. Условие IS NULL: если параллельный повтор уже
     // привязал (провайдер идемпотентен по paymentId, значение то же) — 0 строк, не ошибка.

@@ -23,6 +23,16 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, ex.getMessage());
     }
 
+    @ExceptionHandler(InvalidWebhookSignatureException.class)
+    public ResponseEntity<ErrorResponse> handleSignature(InvalidWebhookSignatureException ex) {
+        return build(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    }
+
+    @ExceptionHandler(MalformedWebhookException.class)
+    public ResponseEntity<ErrorResponse> handleMalformedWebhook(MalformedWebhookException ex) {
+        return build(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
     // Провайдер недоступен: платёж остался PENDING без счёта, повтор запроса безопасен.
     @ExceptionHandler(PaymentProviderException.class)
     public ResponseEntity<ErrorResponse> handleProvider(PaymentProviderException ex) {
