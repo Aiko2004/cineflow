@@ -24,7 +24,7 @@ breadth of features.
 | `screening-service` | 8083 (+ gRPC 9083) | MongoDB | Screenings as denormalized documents |
 | `auth-service` | 8084 | PostgreSQL + Redis | Accounts, OTP login, JWT issuing/refresh |
 | `booking-service` | 8085 | PostgreSQL + Redis | Seat holds, bookings, QR tickets |
-| `payment-service` | 8086 | PostgreSQL + Kafka | Invoices via a Kaspi-style simulator, transactional outbox (webhook, refunds and the saga with booking are not built yet) |
+| `payment-service` | 8086 | PostgreSQL + Kafka | Invoices via a Kaspi-style simulator, HMAC-signed webhook, reconciliation, refunds; transactional outbox, command consumer with dead-letter topic (the saga with booking is not built yet) |
 
 Each relational service owns its own logical database (`movies`, `theater`, `auth`, `booking`,
 `payment`) on a shared PostgreSQL instance. Inter-service calls are REST/Feign by default; the single
@@ -33,7 +33,7 @@ gRPC call is `booking → screening`.
 ### Target architecture
 
 The diagram below is the **full target** vision from [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md).
-Services drawn here that are not in the table above (Payment, Notification, Analytics, Media,
+Services drawn here that are not in the table above (Notification, Analytics, Media,
 Users, Keycloak) are **planned, not yet built** — see [Status](#status).
 
 ```mermaid
@@ -183,8 +183,8 @@ rebook). The build is green including Testcontainers integration tests.
 
 **Not started / planned** (see the roadmap in [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)):
 
-- Payment webhook, refunds and the Booking ↔ Payment saga (payment-service creates invoices and
-  publishes events through an outbox; booking does not call it yet and still has no payment)
+- The Booking ↔ Payment saga (payment-service handles invoices, webhooks, reconciliation and
+  refunds on its own; booking does not call it yet and still has no payment)
 - Notification service (Kafka → RabbitMQ) and Analytics service (ClickHouse)
 - Media service (Go, via gRPC) and Users service
 - Keycloak for admin/manager roles
