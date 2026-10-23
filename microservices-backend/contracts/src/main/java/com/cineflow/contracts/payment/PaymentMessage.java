@@ -18,8 +18,10 @@ import java.util.UUID;
 //     не-Java-сервиса (Media Service на Go) без знания соглашений Spring.
 public sealed interface PaymentMessage permits PaymentEvent, PaymentCommand {
 
-    // Уникальный id сообщения — ключ идемпотентности для потребителя. Совпадает с id строки
-    // outbox у отправителя.
+    // Уникальный id сообщения. Совпадает с id строки outbox у отправителя: по нему видно, что
+    // два сообщения в топике — одна и та же повторная отправка, а не два разных события
+    // (трассировка, разбор DLT). Идемпотентность потребителей держится НЕ на нём, а на условных
+    // переходах автоматов (PAYMENT_DESIGN.md §5): таблицы обработанных eventId нет.
     UUID eventId();
 
     Instant occurredAt();
