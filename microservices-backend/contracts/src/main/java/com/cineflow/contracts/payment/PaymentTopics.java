@@ -11,8 +11,9 @@ public final class PaymentTopics {
     // booking → payment. Ключ сообщения — bookingId.
     public static final String COMMANDS = "payment.commands";
 
-    // Dead-letter: DeadLetterPublishingRecoverer по умолчанию пишет в <topic>.DLT
-    // в ТУ ЖЕ партицию, что и исходное сообщение, поэтому у DLT партиций не меньше.
+    // Dead-letter. Имя задаём сами: дефолт DeadLetterPublishingRecoverer в spring-kafka 4.x —
+    // "<topic>-dlt" (в 2.x/3.x был ".DLT"), имя топика не должно зависеть от версии библиотеки.
+    // Сообщение уходит в ТУ ЖЕ партицию, что и исходное, поэтому у DLT партиций не меньше.
     public static final String EVENTS_DLT = EVENTS + ".DLT";
     public static final String COMMANDS_DLT = COMMANDS + ".DLT";
 

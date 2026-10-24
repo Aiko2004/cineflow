@@ -151,4 +151,36 @@ class PaymentCreationTest extends AbstractPaymentIntegrationTest {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM payments WHERE booking_id = ?", Integer.class, bookingId)).isEqualTo(1);
     }
+
+    // Граничный случай: платёж PENDING без счёта (провайдер был недоступен), а повтор запроса
+    // пришёл, когда срок счёта уже вышел. Счёт с истёкшим сроком не выставляется — FAILED(EXPIRED).
+    @Test
+    void lateRetryOfPendingWithoutInvoiceFailsWithExpiredInsteadOfCreatingInvoice() {
+        UUID bookingId = UUID.randomUUID();
+        doThrow(new PaymentProviderException("down", null))
+                .when(gateway).createInvoice(any(), any(), any(), any());
+        assertThatThrownBy(() -> paymentService.createInvoice(USER, request(bookingId)))
+                .isInstanceOf(PaymentProviderException.class);
+        doCallRealMethod().when(gateway).createInvoice(any(), any(), any(), any());
+        UUID paymentId = jdbcTemplate.queryForObject(
+                "SELECT id FROM payments WHERE booking_id = ?", UUID.class, bookingId);
+        expire(paymentId);
+
+        InvoiceResponse response = paymentService.createInvoice(USER, request(bookingId));
+
+        assertThat(response.status()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(response.providerInvoiceId()).isNull();
+        assertThat(outboxPayloads(bookingId, "PaymentFailed")).singleElement()
+                .satisfies(payload -> assertThat(payload).contains("\"reason\": \"EXPIRED\""));
+        // Провайдера звали один раз — в первой (упавшей) попытке; поздний повтор до него не дошёл.
+        verify(gateway, times(1)).createInvoice(any(), any(), any(), any());
+        assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM sim_invoices", Integer.class)).isZero();
+
+        // Ещё один повтор: платёж уже FAILED — ни счёта, ни второго события.
+        InvoiceResponse again = paymentService.createInvoice(USER, request(bookingId));
+
+        assertThat(again.status()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(outboxCount()).isEqualTo(1);
+        verify(gateway, times(1)).createInvoice(any(), any(), any(), any());
+    }
 }

@@ -1,7 +1,7 @@
 # CineFlow — текущее состояние
 
 > Документ для передачи контекста в новый чат. Обновлять по ходу работы.
-> Последнее обновление: 18 октября 2026 (Фаза 4, PR 1: Kafka в compose, payment-service с outbox + relay; Dependabot #14 смержен). До этого: 17 октября — уборка (PAYMENT_DESIGN.md в репо, нормализация `gradlew.bat`, `/swagger-ui.html` в permitAll); 5 октября — репозиторий опубликован на GitHub (CI на каждый PR, ruleset `protect-main`, политика Dependabot); ещё раньше: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
+> Последнее обновление: 24 октября 2026 (Фаза 4, PR 2: webhook с HMAC, симулятор «приложения Kaspi», сверка, возвраты, потребитель `payment.commands` с DLT). До этого: 18 октября — PR 1 (Kafka в compose, payment-service с outbox + relay; Dependabot #14 смержен); 17 октября — уборка (PAYMENT_DESIGN.md в репо, нормализация `gradlew.bat`, `/swagger-ui.html` в permitAll); 5 октября — репозиторий опубликован на GitHub (CI на каждый PR, ruleset `protect-main`, политика Dependabot); ещё раньше: 1 октября — закрыты 5 долгов (gRPC-версии, /scroll, идемпотентный init, theater на Flyway, решение по gRPC-порту).
 
 ## Как работаем
 
@@ -63,9 +63,9 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 
 **Первый gRPC в проекте** — `booking → screening` `GetScreening` (валидация сеанса + денормализация одним вызовом). `.proto` в `contracts`, стабы генерит `com.google.protobuf`-плагин; screening поднимает `io.grpc.Server` на 9083 через `SmartLifecycle`; booking зовёт blocking-стаб под CB/bulkhead/retry. Feign к theater (места) — по конвенции. Детали и грабли версий — в `CLAUDE.md` (раздел gRPC).
 
-**Kafka + payment-service (Фаза 4, PR 1 из двух; см. `docs/PAYMENT_DESIGN.md`, раздел «Kafka и payment-service» в `CLAUDE.md`).** В compose — брокер `apache/kafka:4.3.1` (KRaft) и Kafka UI (`kafbat/kafka-ui:v1.5.0`, :8090), автосоздание топиков выключено. `payment-service` (:8086): платёж + автомат `PaymentStatus` с условными переходами, transactional outbox (`OutboxWriter` — `MANDATORY`) и relay в Kafka, `POST /internal/payments` (идемпотентно по `bookingId`), `GET /payment/{id}`, `PaymentGateway` + симулятор Kaspi (создание счёта, статус). Контракты событий/команд — `contracts/.../payment`. Gateway: маршрут `/payment/**` (`/internal/**` не маршрутизируется). **Не сделано (PR 2):** webhook с HMAC, сверка, возвраты, потребитель `payment.commands` с DLT, dev-эндпоинты симулятора; **инкремент 3** — оркестрация в booking.
+**Kafka + payment-service (Фаза 4, PR 1 из двух; см. `docs/PAYMENT_DESIGN.md`, раздел «Kafka и payment-service» в `CLAUDE.md`).** В compose — брокер `apache/kafka:4.3.1` (KRaft) и Kafka UI (`kafbat/kafka-ui:v1.5.0`, :8090), автосоздание топиков выключено. `payment-service` (:8086): платёж + автомат `PaymentStatus` с условными переходами, transactional outbox (`OutboxWriter` — `MANDATORY`) и relay в Kafka, `POST /internal/payments` (идемпотентно по `bookingId`), `GET /payment/{id}`, `PaymentGateway` + симулятор Kaspi (создание счёта, статус). Контракты событий/команд — `contracts/.../payment`. Gateway: маршрут `/payment/**` (`/internal/**` не маршрутизируется). **PR 2:** публичный webhook `POST /payment/webhooks/kaspi` (HMAC-SHA256, поиск платежа по `paymentId`), dev-эндпоинты симулятора `pay?delaySeconds`/`decline` с отправкой подписанного webhook по HTTP, сверка (`ReconciliationService`), возвраты (`RefundService` + фоновый повтор), отмена счёта (`CancellationService`), потребитель `payment.commands` с повторами и `.DLT`, индексы V3. **Не сделано: инкремент 3** — оркестрация в booking.
 
-**Сборка** — `./gradlew build` проходит целиком, **включая Testcontainers-тесты (120 тестов, 0 падений: auth 13, movie 47, screening 19, booking 10, payment 31)** — прогнано с живым Docker. Версии плагинов только в корне (добавлен `com.google.protobuf` apply false; Kotlin-плагин удалён — проект на чистой Java).
+**Сборка** — `./gradlew build` проходит целиком, **включая Testcontainers-тесты (149 тестов, 0 падений: auth 13, movie 47, screening 19, booking 10, payment 60)** — прогнано с живым Docker. Версии плагинов только в корне (добавлен `com.google.protobuf` apply false; Kotlin-плагин удалён — проект на чистой Java).
 
 **Инфраструктура:** Postgres, MongoDB, Redis, **Kafka и Kafka UI** в Docker (`docker-compose.yml`). Логические БД (`movies`/`theater`/`auth`/`booking`/`payment`) создаёт **companion-сервис `postgres-init`** на каждый `docker compose up` (depends_on healthcheck postgres, идемпотентный `\gexec`-скрипт) — работает и на свежем, и на существующем томе (прежний initdb.d отрабатывал только на свежем). Конфиг через `${VAR:default}` + `.env`, `.env-example` в репозитории. ⚠️ Нативные Postgres/Redis на 5432/6379 → поднимать с `DB_HOST_PORT=5433 REDIS_HOST_PORT=6380` + сервисам `DB_PORT=5433 REDIS_PORT=6380`.
 
@@ -102,6 +102,14 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 | Тип сообщения — поле `type` в теле JSON, не заголовок `__TypeId__` | Заголовок по умолчанию — полное имя Java-класса: связывает сервисы именами пакетов и не читается из не-Java-сервисов; сообщение, положенное руками в Kafka UI, без заголовка не десериализуется. Логические имена — в `@JsonSubTypes` контракта |
 | Значение в Kafka — готовый JSON-`String` (`StringSerializer`) | В outbox уже лежит сериализованное сообщение; повторная сериализация незачем, и в Kafka уходит ровно записанное. Актуальные Jackson-3 сериализаторы Spring Kafka (`JacksonJson*`) понадобятся на стороне потребителя |
 | Топики — `NewTopic`-бины в payment-service, а не init-контейнер | Определение топика в коде рядом с владельцем, одинаково работает в dev/тестах/проде. Минус: создаются только при старте сервиса (см. `CLAUDE.md`) |
+| Идемпотентность потребителей — естественная (условные переходы), без inbox-таблицы `eventId` | Каждый обработчик безвреден при повторе сам; таблица обработанных сообщений — лишняя запись в каждой транзакции и ещё одно место для рассинхронизации. Почему повтор безвреден — комментарием у каждого обработчика |
+| Повтор `RefundPayment` в `REFUND_PENDING` провайдера не вызывает; возврат доводит только фоновая задача | Число вызовов `refund` не должно зависеть от числа доставок из Kafka. Задача берёт только «застрявшие» дольше `refund-retry-min-age` — не пересекается с обработчиком команды |
+| `CancelInvoice`: сначала отмена у провайдера, потом `CANCELLED` у нас | Обратный порядок терял деньги в гонке «оплатил, пока шла отмена». Провайдер ответил «оплачен» → платёж `PAID`, дальше возврат по саге |
+| Webhook ищет платёж по `paymentId` из тела, не по `provider_invoice_id` | Webhook, пришедший до записи `provider_invoice_id`, иначе терял бы оплату |
+| Поздний повтор создания счёта для PENDING без счёта и с истёкшим сроком → `FAILED(EXPIRED)` | Счёт с истёкшим сроком оплатить нельзя, продлить — пережить удержание брони. Провайдер вызывается только для `PENDING` |
+| Потребитель читает `String`, JSON разбирает листенер | В DLT попадает исходный текст, публикует тот же `KafkaTemplate<String,String>`, что и relay |
+| Имя DLT задано явно | Дефолт spring-kafka 4.x — `<topic>-dlt` (в 3.x `.DLT`); имя топика — контракт, не должно зависеть от версии библиотеки |
+| Сверка и повтор возвратов — на один экземпляр (как relay) | Блокировки «взять в работу» нет; при нескольких экземплярах корректность держат условные `UPDATE`, но запросы к провайдеру дублируются |
 | `POST /internal/payments` не через gateway; межсервисной аутентификации нет | Сумму присылает вызывающий — наружу нельзя. Осознанное ограничение (порт 8086 общий с публичными путями, защита сетевая), см. `PAYMENT_DESIGN.md §7`; дальше — client credentials/mTLS |
 | Платёж `PENDING` пишется ДО вызова провайдера | Намерение фиксируется раньше внешнего действия; «PENDING без счёта» самовосстанавливается повтором (провайдер идемпотентен по `paymentId`). Обратный порядок оставлял бы счёт, о котором мы не знаем |
 
@@ -112,7 +120,7 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 - **`screeningDate` считается в UTC**, а расписание кинотеатр показывает по местному времени. Для UTC+5 сеансы с 00:00 до 05:00 попадут в предыдущую дату. Правильное решение — таймзона кинотеатра или явное поле от клиента. Текущее — осознанная заглушка.
 - **slug/banner в MovieSnapshot — null**: movie-service пока не возвращает эти поля (технический долг в movie-service). Заполнятся после рефакторинга movie-service.
 
-**Тесты:** ~~`./gradlew build` не выполняет ни одного теста~~ ✅ неактуально — сейчас 89 тестов на Testcontainers + слайсах (`@DataMongoTest`, `@WebMvcTest`, `@SpringBootTest`), все зелёные. theater-service пока без тестов (единственный модуль без покрытия).
+**Тесты:** ~~`./gradlew build` не выполняет ни одного теста~~ ✅ неактуально — сейчас 149 тестов на Testcontainers + слайсах (`@DataMongoTest`, `@WebMvcTest`, `@SpringBootTest`), все зелёные. theater-service пока без тестов (единственный модуль без покрытия).
 
 **movie-service** (найдено на ревью миграции V2):
 
@@ -139,7 +147,30 @@ Frontend пока не начат. Оригинальный Next.js-фронте
 
 ## Следующий шаг (актуальный)
 
-**Фаза 4, PR 1 «Kafka + скелет payment-service» (18 окт, ветка `feat/kafka-payment-skeleton`) — готов, ждёт ревью.** Дальше — PR 2 (`feat/payment-webhook-refund`): симулятор «приложения Kaspi» с dev-эндпоинтами и отправкой webhook, публичный webhook с HMAC-SHA256, сверка и истечение, потребитель `payment.commands` (`RefundPayment`, `CancelInvoice`) с повторами и `.DLT`. Инкремент 3 (оркестрация в booking: `/payment/init`, потребитель `payment.events`, закрытие заглушки `confirm`) — после.
+**Фаза 4, PR 2 «webhook, сверка, возвраты» (24 окт, ветка `feat/payment-webhook-refund`) — готов, ждёт ревью.** PR 1 смержен (#16). Дальше — **инкремент 3** (оркестрация в booking: `/payment/init`, V2-миграция, outbox + relay в booking, потребитель `payment.events`, команды `RefundPayment`/`CancelInvoice`, закрытие заглушки `confirm`, проверка инварианта §2 PAYMENT_DESIGN). Начинать после ревью PR 2.
+
+Что проверено вживую в PR 2 (Postgres/Redis/Kafka в Docker, eureka + auth + gateway + payment-service; токен через OTP):
+- Счёт → `POST /payment/sim/invoices/{id}/pay` **через gateway** → симулятор отправил подписанный webhook по HTTP → платёж `PAID` → `PaymentSucceeded` в `payment.events` (видно и консольным потребителем, и через Kafka UI).
+- `pay?delaySeconds=15`: через 5 с платёж ещё `PENDING` (у «провайдера» счёт уже `PAID`), webhook применён через 15 с.
+- Webhook через gateway без токена с неверной подписью → 401 от самого payment-service (gateway пропускает `POST` этого пути); `GET` того же пути без токена → 401 на gateway.
+- Две команды `RefundPayment`, положенные через REST Kafka UI (кнопка «Produce Message»), → один возврат у провайдера, платёж и счёт `REFUNDED`, в `payment.events` ровно `PaymentSucceeded` + `RefundCompleted`; вторая команда — «already refunded».
+- Нечаянно, но полезно: первые две команды ушли с пустым значением (в API Kafka UI v1.5 поле называется `value`, не `content`) → обе в `payment.commands.DLT` без повторов, с заголовками `kafka_dlt-*` (cause — `MalformedCommandException`).
+- Сверка **по расписанию**: потерянный webhook (счёт `PAID` у провайдера, срок вышел) → платёж `PAID` на ближайшем тике.
+- Миграция V3 накатилась на существующую БД `payment` (v2 → v3). В брокере нет топика `*-dlt`.
+
+Найдено в PR 2 и исправлено:
+- **Имя DLT.** `DeadLetterPublishingRecoverer` в spring-kafka 4.x по умолчанию пишет в `<topic>-dlt`, а не `.DLT`, — комментарий в `PaymentTopics` из PR 1 утверждал обратное (не проверялось). Ошибка пряталась: брокер Testcontainers **автосоздаёт** топики, поэтому отправка в `payment.commands-dlt` проходила молча; заметно стало только потому, что тест читает именно `.DLT`. Теперь имя задано явно, а в тестах автосоздание выключено, как в compose (проверено: с дефолтным именем тест DLT падает).
+- `createInvoice` вызывал провайдера для любого платежа с пустым `provider_invoice_id`, в т.ч. уже `FAILED` — теперь только для `PENDING`.
+
+**Не проверено / открыто (PR 2):**
+- Фоновые задачи и relay с **несколькими** экземплярами (см. `PAYMENT_DESIGN.md §4`).
+- Оплата к `FAILED`/`CANCELLED` платежу при двойном сбое — только `ERROR` в логе (`PAYMENT_DESIGN.md §9`).
+- Повторной доставки webhook в симуляторе нет; потерю закрывает сверка.
+- Комментарий в применённой миграции V1 («`id` … идемпотентность потребителя») неточен — идемпотентность держат условные переходы, а не `eventId`; миграцию не правим (checksum).
+
+---
+
+**Архив: PR 1 «Kafka + скелет payment-service» (18 окт) — смержен (#16).**
 
 Что проверено вживую в PR 1 (стек: Postgres/Redis/Kafka в Docker, eureka + auth + gateway + payment-service):
 - Kafka и Kafka UI поднимаются; env-переменные `apache/kafka:4.3.1` рабочие; автосоздание топиков выключено (продюсер в несуществующий топик получает `UnknownTopicOrPartition`); Kafka UI видит кластер `ONLINE` и все четыре топика.

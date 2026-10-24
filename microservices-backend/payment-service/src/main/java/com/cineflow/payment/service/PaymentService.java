@@ -1,5 +1,6 @@
 package com.cineflow.payment.service;
 
+import com.cineflow.contracts.payment.PaymentFailureReason;
 import com.cineflow.payment.dto.CreateInvoiceRequest;
 import com.cineflow.payment.dto.InvoiceResponse;
 import com.cineflow.payment.dto.PaymentResponse;
@@ -7,12 +8,14 @@ import com.cineflow.payment.exception.PaymentConflictException;
 import com.cineflow.payment.gateway.Invoice;
 import com.cineflow.payment.gateway.PaymentGateway;
 import com.cineflow.payment.model.Payment;
+import com.cineflow.payment.model.PaymentStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -35,15 +38,30 @@ public class PaymentService {
     // Состояние «PENDING без счёта» самовосстанавливается: повтор того же запроса находит
     // платёж, видит пустой provider_invoice_id и повторяет шаги 2–3. Провайдер идемпотентен
     // по paymentId, поэтому второй счёт не появится.
+    //
+    // Граничный случай: повтор пришёл, когда срок счёта (expires_at) уже прошёл. Выставлять
+    // счёт с истёкшим сроком бессмысленно (оплатить его нельзя) — платёж переводится в
+    // FAILED(EXPIRED), ответ несёт этот статус и пустой providerInvoiceId. Продлевать срок
+    // тоже нельзя: invoice_ttl намеренно короче удержания брони (§3), новый срок пережил бы
+    // бронь. Вызывающий (booking) по статусу FAILED начинает покупку заново.
+    //
+    // Провайдера зовём ТОЛЬКО для PENDING: платёж без счёта может быть уже FAILED (сверка или
+    // предыдущий повтор перевели его по истечении) — тогда повтор просто возвращает статус.
     public InvoiceResponse createInvoice(UUID userId, CreateInvoiceRequest request) {
         BigDecimal amount = request.amount().setScale(2);   // валидация гарантирует ≤ 2 знаков
         Payment payment = findOrCreate(userId, request, amount);
 
-        if (payment.getProviderInvoiceId() == null) {
-            Invoice invoice = gateway.createInvoice(
-                    payment.getId(), payment.getPhone(), payment.getAmount(),
-                    payment.getExpiresAt().toInstant());
-            payment = persistence.attachInvoice(payment.getId(), invoice.providerInvoiceId());
+        if (payment.getProviderInvoiceId() == null && payment.getStatus() == PaymentStatus.PENDING) {
+            if (!payment.getExpiresAt().isAfter(OffsetDateTime.now())) {
+                // false — параллельно уже перевели (сверка, другой повтор): событие одно.
+                persistence.markFailed(payment.getId(), PaymentFailureReason.EXPIRED);
+                payment = persistence.get(payment.getId());
+            } else {
+                Invoice invoice = gateway.createInvoice(
+                        payment.getId(), payment.getPhone(), payment.getAmount(),
+                        payment.getExpiresAt().toInstant());
+                payment = persistence.attachInvoice(payment.getId(), invoice.providerInvoiceId());
+            }
         }
         return new InvoiceResponse(payment.getId(), payment.getProviderInvoiceId(),
                 payment.getExpiresAt().toInstant(), payment.getStatus());
